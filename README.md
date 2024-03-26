@@ -1,4 +1,4 @@
-# Service Locator
+# ServiceLocator for iOS
 [![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml)
 ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
 [![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)](https://support.apple.com/en-us/101566)
