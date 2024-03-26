@@ -1,4 +1,5 @@
 # Service Locator
+
 The Service Locator is a design pattern used to decouple the way objects are obtained from the concrete classes that implement them. This is achieved by centralizing object creation to a single location, known as a service locator.
 
 ## Getting Started
@@ -24,12 +25,9 @@ class MyModule: ServiceLocatorModule {
 
         // factory
         factory(AppLinkFactory.self) {
-            let appDataSettingsManager: AppDataSettingsManager = self.resolve()
+            let settingsManager: SettingsManager = self.resolve()
 
-            return AppDataAppLinkFactory(
-                    descriptionFactory: appDataSettingsManager,
-                    getPluginContainer: PluginController.enabledContainer(for:)
-            )
+            return AppLinkFactory(descriptionFactory: SettingsManage)
         }
     }
 }
