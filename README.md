@@ -129,7 +129,7 @@ The [Swift Package Manager](https://swift.org/package-manager/) is a tool for ma
 To integrate ServiceLocator into your Xcode project using Xcode 15.0 or later, specify it in `File > Swift Packages > Add Package Dependency...`:
 
 ```swift
-https://github.com/kibotu/ServiceLocator, :branch="<latest-version>"
+https://github.com/kibotu/ServiceLocator
 ```
 
 ## Requirements
