@@ -1,5 +1,5 @@
 # Service Locator
-![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg?branch=master)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml)
+[![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml)
 ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
 ![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)
 ![Static Badge](https://img.shields.io/badge/Swift%20-%20%3E%205.9%20-%20orange)
