@@ -1,5 +1,5 @@
 # ServiceLocator for iOS
-[![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml) ![GitHub Release](https://img.shields.io/github/v/release/kibotu/ServiceLocator?include_prereleases&sort=semver&display_name=tag&style=for-the-badge) ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
+[![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml) ![GitHub Release](https://img.shields.io/github/v/release/kibotu/ServiceLocator?include_prereleases&sort=semver&display_name=tag) ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
 [![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)](https://support.apple.com/en-us/101566)
 [![Static Badge](https://img.shields.io/badge/Swift%205.10%20-%20orange)](https://www.swift.org/blog/swift-5.10-released/)
                 
