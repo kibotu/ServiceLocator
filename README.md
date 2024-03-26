@@ -126,12 +126,12 @@ func doSomething() {
 
 ### Swift Package Manager
 
-The [Swift Package Manager](https://swift.org/package-manager/) is a tool for managing the distribution of Swift code. It’s integrated with the Swift build system to automate the process of downloading, compiling, and linking dependencies.
-
-To integrate ServiceLocator into your Xcode project using Xcode 15.0 or later, specify it in `File > Swift Packages > Add Package Dependency...`:
+Add the depdency to your `Package.swift`
 
 ```swift
-https://github.com/kibotu/ServiceLocator
+    dependencies: [
+        .package(url: "https://github.com/kibotu/ServiceLocator", from: "1.0.2"),
+    ]
 ```
 
 ## Requirements
