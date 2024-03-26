@@ -126,11 +126,17 @@ func doSomething() {
 
 ### Swift Package Manager
 
-Add the depdency to your `Package.swift`
+Add the dependency to your `Package.swift`
 
 ```swift
+    products: [
+      ...
+    ]
     dependencies: [
         .package(url: "https://github.com/kibotu/ServiceLocator", from: "1.0.2"),
+    ],
+    targets: [
+      ...
     ]
 ```
 
