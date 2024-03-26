@@ -137,7 +137,7 @@ https://github.com/kibotu/ServiceLocator, :branch="<latest-version>"
 
 - iOS 16.0 or later
 - Xcode 15.0 or later
-- Swift 5.9 or later
+- Swift 5.10 or later
                             
 Contributions welcome!
 
