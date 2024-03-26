@@ -1,5 +1,9 @@
 # Service Locator
-
+![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg?branch=master)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml)
+![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
+![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)
+![Static Badge](https://img.shields.io/badge/Swift%20-%20%3E%205.9%20-%20orange)
+                
 The Service Locator is a design pattern used to decouple the way objects are obtained from the concrete classes that implement them. This is achieved by centralizing object creation to a single location, known as a service locator.
 
 ## Getting Started
@@ -117,6 +121,24 @@ func doSomething() {
 }
 ```
 
+## How to install
+
+### Swift Package Manager
+
+The [Swift Package Manager](https://swift.org/package-manager/) is a tool for managing the distribution of Swift code. It’s integrated with the Swift build system to automate the process of downloading, compiling, and linking dependencies.
+
+To integrate ServiceLocator into your Xcode project using Xcode 15.0 or later, specify it in `File > Swift Packages > Add Package Dependency...`:
+
+```swift
+https://github.com/kibotu/ServiceLocator, :branch="<latest-version>"
+```
+
+## 🧳 Requirements
+
+- iOS 16.0 or later
+- Xcode 15.0 or later
+- Swift 5.9 or later
+                            
 Contributions welcome!
 
 ### License
