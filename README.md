@@ -133,7 +133,7 @@ To integrate ServiceLocator into your Xcode project using Xcode 15.0 or later, s
 https://github.com/kibotu/ServiceLocator, :branch="<latest-version>"
 ```
 
-## 🧳 Requirements
+## Requirements
 
 - iOS 16.0 or later
 - Xcode 15.0 or later
