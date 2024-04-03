@@ -8,10 +8,6 @@ import Foundation
 open class Dependency<T> {
     /// A weak reference to the service locator, which is used to resolve instances of type `T`.
     internal weak var serviceLocator: ServiceLocator?
-    
-    /// The resolved value of type `T`. It's nil until it gets resolved by calling
-    /// 'resolvedWrappedValue()'.
-    fileprivate(set) var resolvedValue: T!
 
     /// Initializes a new dependency with a reference to a service locator.
     ///
