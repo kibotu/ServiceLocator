@@ -1,109 +1,131 @@
 import Foundation
 
+/// A service locator that manages dependency injection for an application
 public class ServiceLocator {
-
-    private var singletonFactories: [String: Any] = [:]
-    private var singletons: [String: Any] = [:]
-    private var factories: [String: Any] = [:]
+    static var enableLogging: Bool = false
     
-    private var lock = NSRecursiveLock()
-
+    /// Determines if singletons should be created eagerly or lazily
+    private let eagerly: Bool = true
+    
+    /// Stores factories for eagerly created singletons
+    private var singletonFactories: [DependencyWithKey] = []
+    /// Stores already created singleton instances
+    private var singletons: [String: Any] = [:]
+    /// Stores factories for non-singleton dependencies
+    private var factories: [String: () -> Any] = [:]
+    
+    /// Lock for thread-safe access to factories
+    private let factoryLock = NSRecursiveLock()
+    /// Lock for thread-safe access to singletons
+    private let singleLock = NSRecursiveLock()
+    /// Lock for thread-safe module registration
+    private var moduleLock = NSRecursiveLock()
+    
     /// Registers a factory closure that will be used to create an instance of a service.
-    /// - Parameter type: The type of the service to register.
-    /// - Parameter factory: A closure that returns an instance of the service.
+    /// - Parameters:
+    ///   - type: The type of the service to register.
+    ///   - factory: A closure that returns an instance of the service.
     internal func factory<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        lock.lock()
-        defer { lock.unlock() }
         let key = String(describing: type)
-        if factories.keys.contains(key) {
-            fatalError("[ServiceLocator] factory duplicated key=$key")
+        factoryLock.lock()
+        defer { factoryLock.unlock() }
+        
+        guard factories[key] == nil else {
+            fatalError("[factory] Factory for \(key) already exists.")
         }
+        
         factories[key] = factory
     }
     
     /// Registers a singleton factory closure that will be used to create and cache an instance of a service.
-    /// - Parameter type: The type of the singleton service to register.
-    /// - Parameter factory: A closure that creates and returns a single instance of the service.
+    /// - Parameters:
+    ///   - type: The type of the singleton service to register.
+    ///   - factory: A closure that creates and returns a single instance of the service.
     internal func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        lock.lock()
-        defer { lock.unlock() }
         let key = String(describing: type)
-        if singletonFactories.keys.contains(key) {
-            fatalError("[ServiceLocator] single duplicated key=$key")
+        singleLock.lock()
+        defer { singleLock.unlock() }
+        guard singletons[key] == nil else {
+            fatalError("[single] Factory for \(key) already exists.")
         }
-        singletonFactories[key] = factory
+        if eagerly {
+            singletonFactories.append(DependencyWithKey(key: key, factory: factory))
+        } else {
+            singletons[key] = factory()
+        }
     }
     
-    /// Resolves and returns an instance of the requested service if available.
-    /// If a singleton is requested it will return the same cached instance on subsequent calls.
-    /// - Returns: An instance of the requested service type `T`.
-    /// - Throws: A fatal error if no matching factory or singleton is found for the requested service type `T`.
-    public func resolve<T>() -> T {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Resolves and returns an instance of the specified type.
+    /// - Parameters:
+    ///   - file: The file where the resolution is requested (default: current file)
+    ///   - fileId: The file ID where the resolution is requested (default: current file ID)
+    ///   - function: The function where the resolution is requested (default: current function)
+    ///   - line: The line number where the resolution is requested (default: current line)
+    /// - Returns: An instance of the specified type
+    /// - Throws: `ResolutionError` if the dependency cannot be resolved
+    public func resolve<T>(_ file: String = #file, _ fileId: String = #fileID, _ function: String = #function, _ line: Int = #line) throws -> T {
         let key = String(describing: T.self)
+        Self.log("[\(file)][resolve] \(key) by \(fileId)#\(function):\(line)")
         
-        if let singleton = singletons[key] as? T {
-            return singleton
-        } else if let singletonFactory = singletonFactories[key] as? () -> T {
-            let builtService = singletonFactory()
-            singletons[key] = builtService
-            return builtService
+        if let singletonInstance = singletons[key] as? T {
+            return singletonInstance
+        } else if let factoryInstance = factories[key]?() as? T {
+            return factoryInstance
+        } else {
+            throw ResolutionError(message: "No registered factory for \(key)")
         }
-        
-        if let serviceFactory = factories[key] as? () -> T {
-            return serviceFactory()
-        }
-        
-        fatalError("[ServiceLocator] could not resolve \(key)")
     }
-
-    /// Calls a closure containing module setup logic which should register services within this locator using `factory` or `single`.
-    /// - Parameter closure: A closure containing module setup logic with `ServiceLocatorModule` configuration methods called inside it.
+    
+    /// Registers a module with the service locator
+    /// - Parameter closure: A closure that returns a `ServiceLocatorModule`
     internal func module(_ closure: @escaping () -> ServiceLocatorModule) {
-        lock.lock()
-        defer { lock.unlock() }
+        moduleLock.lock()
+        defer { moduleLock.unlock() }
         closure().buildInternal(locator: self)
     }
+    
+    /// Builds all eagerly loaded singletons
+    /// - Parameter file: The file where the build is initiated (default: current file)
+    @MainActor
+    public func build(_ file: String = #file) async {
+        let filename = file
+        for dependency in singletonFactories {
+            Self.log("[\(filename)][build] \(dependency.key)")
+            singletons[dependency.key] = dependency.factory()
+        }
+    }
+    
+    /// Resets the ServiceLocator to its initial state
+    public func reset() {
+        factoryLock.lock()
+        singleLock.lock()
+        moduleLock.lock()
+        defer {
+            factoryLock.unlock()
+            singleLock.unlock()
+            moduleLock.unlock()
+        }
+
+        singletonFactories.removeAll()
+        singletons.removeAll()
+        factories.removeAll()
+
+        Self.log("[reset] ServiceLocator has been reset")
+    }
+    
+    /// Logs a message if logging is enabled
+    /// - Parameter message: The message to log
+    private static func log(_ message: String) {
+        if Self.enableLogging {
+            print("[ServiceLocator]\(message)")
+        }
+    }
 }
 
-open class ServiceLocatorModule {
-    public init() {
-    }
-
-    fileprivate weak var locator: ServiceLocator!
-
-    open func build() {
-        // Method designed to be overridden where one can put registration logic during module building phase
-    }
-}
-
-public extension ServiceLocatorModule {
-    final internal func buildInternal(locator: ServiceLocator) {
-        self.locator = locator
-        build()
-    }
-
-    final func factory<T>(_  type: T.Type = T.self, _ factory: @escaping () -> T) {
-        locator.factory(type, factory)
-    }
-
-    final func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        locator.single(type, factory)
-    }
-
-    final func resolve<T>() -> T {
-        locator.resolve()
-    }
-
-    final func module(_ closure: @escaping () -> ServiceLocatorModule) {
-        locator.module(closure)
-    }
-}
 
 /// Initializes and configures a new `ServiceLocator` optionally with provided modules configuration closures.
 /// - Parameter closure: An optional closure returning one or more configured modules.
-/// - Returns : A fully initialized `ServiceLocator` object ready to use in your application.
+/// - Returns: A fully initialized `ServiceLocator` object ready to use in your application.
 public func startServiceLocator(_ closure: (() -> ServiceLocatorModule)? = nil) -> ServiceLocator {
     let serviceLocator = ServiceLocator()
     if let modules = closure?() {

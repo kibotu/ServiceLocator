@@ -2,8 +2,8 @@
 [![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml) [![GitHub Tag](https://img.shields.io/github/v/tag/kibotu/ServiceLocator?include_prereleases&sort=semver)](https://github.com/kibotu/ServiceLocator/releases) ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
 [![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)](https://support.apple.com/en-us/101566)
 [![Static Badge](https://img.shields.io/badge/Swift%205.10%20-%20orange)](https://www.swift.org/blog/swift-5.10-released/)
-                
-The Service Locator is a design pattern used to decouple the way objects are obtained from the concrete classes that implement them. This is achieved by centralizing object creation to a single location, known as a service locator. 
+
+The Service Locator is a design pattern used to decouple the way objects are obtained from the concrete classes that implement them. This is achieved by centralizing object creation to a single location, known as a service locator.
 
 This tiny project has been inspired by [RouterService](https://github.com/rockbruno/RouterService) and [Swinject](https://github.com/Swinject/Swinject)
 
@@ -32,13 +32,14 @@ class MyModule: ServiceLocatorModule {
         factory(AppLinkFactory.self) {
             let settingsManager: SettingsManager = self.resolve()
 
-            return AppLinkFactory(descriptionFactory: SettingsManage)
+            return AppLinkFactory(descriptionFactory: settingsManager)
         }
     }
 }
 ```
 
 Tip: Define an application-wide module that includes other modules.
+
 
 ```swift
 class AppModule: ServiceLocatorModule {
@@ -55,6 +56,7 @@ class AppModule: ServiceLocatorModule {
 lazy var myServiceLocator = startServiceLocator {
     AppModule()
 }
+myServiceLocator.build()
 ```
 
 #### 3. Retrieve dependency
@@ -76,6 +78,7 @@ For injecting dependencies within functions or methods, use @Inject before local
 ```swift
 func doSomething() {
     @Inject(myServiceLocator) var contactSheet: ContactSheet
+    // Use contactSheet here
 }
 ```
 
@@ -86,13 +89,23 @@ If you prefer not using property wrappers, directly resolve dependencies using t
 ```swift
 let configProvider : ConfigProvider = serviceLocator.resolve()
 ```
+#### 4. Resetting the Service Locator
+
+You can reset the ServiceLocator to its initial state, which can be useful in testing scenarios:
+
+```swift
+// Reset the entire service locator
+resetServiceLocator(myServiceLocator)
+
+// Or, if you have direct access to the ServiceLocator instance:
+myServiceLocator.reset()
+```
 
 #### Tips and Customizations
 
 ##### Custom Property Wrapper
 
 Create a tailored property wrapper if you have specific needs or want to simplify usage for a particular scope, like plugins in this example:
-
 
 ```swift
 @propertyWrapper
@@ -120,6 +133,14 @@ class MyClass {
 func doSomething() {
     @PluginInject var contactSheet: ContactSheet
 }
+```
+
+### Enabling Logging
+
+You can enable logging for the ServiceLocator to help with debugging:
+
+```swift
+ServiceLocator.enableLogging = true
 ```
 
 ## How to install

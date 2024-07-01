@@ -4,9 +4,23 @@ import XCTest
 class DITests: XCTestCase {
     
     override func setUp() {
-        MyPlugin.serviceLocator = startServiceLocator {
-            PluginModule()
-        }
+       super.setUp()
+       MyPlugin.serviceLocator = startServiceLocator {
+           PluginModule()
+       }
+       
+       let expectation = self.expectation(description: "ServiceLocator build")
+       
+       Task {
+           await MyPlugin.serviceLocator.build()
+           expectation.fulfill()
+       }
+       
+       waitForExpectations(timeout: 10) // Adjust timeout as necessary
+    }
+    
+    override class func tearDown() {
+        MyPlugin.serviceLocator.reset()
     }
 
     func test_when_adding_non_singleton_to_di_then_resolve_new_object() {
@@ -14,34 +28,38 @@ class DITests: XCTestCase {
             DummyService()
         }
 
-        let firstResolvedService: DummyServiceProtocol = MyPlugin.serviceLocator.resolve()
-        let secondResolvedService: DummyServiceProtocol = MyPlugin.serviceLocator.resolve()
+        let firstResolvedService: DummyServiceProtocol = try! MyPlugin.serviceLocator.resolve()
+        let secondResolvedService: DummyServiceProtocol = try! MyPlugin.serviceLocator.resolve()
 
         XCTAssertNotEqual(firstResolvedService.uuid, secondResolvedService.uuid)
     }
 
-    func test_when_adding_singleton_to_di_then_resolve_existing_object() {
+    func test_when_adding_singleton_to_di_then_resolve_existing_object() async {
         MyPlugin.serviceLocator.single(DummyServiceProtocol.self) {
             DummyService()
         }
+        
+        await MyPlugin.serviceLocator.build()
 
-        let firstResolvedService: DummyServiceProtocol = MyPlugin.serviceLocator.resolve()
-        let secondResolvedService: DummyServiceProtocol = MyPlugin.serviceLocator.resolve()
+        let firstResolvedService: DummyServiceProtocol = try! MyPlugin.serviceLocator.resolve()
+        let secondResolvedService: DummyServiceProtocol = try! MyPlugin.serviceLocator.resolve()
 
         XCTAssertEqual(firstResolvedService.uuid, secondResolvedService.uuid)
     }
 
-    func test_when_property_is_injected_then_it_must_exist_on_access() {
+    func test_when_property_is_injected_then_it_must_exist_on_access() async {
         MyPlugin.serviceLocator.single(DummyServiceProtocol.self) {
             DummyService()
         }
+        
+        await MyPlugin.serviceLocator.build()
 
         let sutPropertyWrapper = PropertyWrapperTest()
 
         XCTAssertNotNil(sutPropertyWrapper.dummyService)
     }
 
-    func test_when_propery_wrapper_in_depedency_graph_then_all_depedencies_can_be_resolved() {
+    func test_when_propery_wrapper_in_depedency_graph_then_all_depedencies_can_be_resolved() async {
         MyPlugin.serviceLocator.single(DummyServiceProtocol.self) {
             DummyService()
         }
@@ -49,27 +67,31 @@ class DITests: XCTestCase {
         MyPlugin.serviceLocator.factory(PropertyWrapperTest.self) {
             PropertyWrapperTest()
         }
+        
+        await MyPlugin.serviceLocator.build()
 
-        let firstResolvedService: DummyServiceProtocol = MyPlugin.serviceLocator.resolve()
-        let propertyWrapper: PropertyWrapperTest = MyPlugin.serviceLocator.resolve()
+        let firstResolvedService: DummyServiceProtocol = try! MyPlugin.serviceLocator.resolve()
+        let propertyWrapper: PropertyWrapperTest = try! MyPlugin.serviceLocator.resolve()
 
         XCTAssertNotNil(firstResolvedService)
         XCTAssertNotNil(propertyWrapper)
     }
 
-    func test_when_use_resolve_in_factory_then_obejcts_are_created() {
+    func test_when_use_resolve_in_factory_then_obejcts_are_created() async {
         MyPlugin.serviceLocator.single(DummyServiceProtocol.self) {
             DummyService()
         }
 
         MyPlugin.serviceLocator.single(DummyServiceProtocol2.self) {
             let service = DummyService2()
-            service.dummyService = MyPlugin.serviceLocator.resolve()
+            service.dummyService = try! MyPlugin.serviceLocator.resolve()
             return service
         }
+        
+        await MyPlugin.serviceLocator.build()
 
-        let firstResolvedService: DummyServiceProtocol = MyPlugin.serviceLocator.resolve()
-        let secondResolvedService: DummyServiceProtocol2 = MyPlugin.serviceLocator.resolve()
+        let firstResolvedService: DummyServiceProtocol = try! MyPlugin.serviceLocator.resolve()
+        let secondResolvedService: DummyServiceProtocol2 = try! MyPlugin.serviceLocator.resolve()
 
         XCTAssertNotNil(firstResolvedService)
         XCTAssertNotNil(secondResolvedService)

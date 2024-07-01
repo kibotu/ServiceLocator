@@ -2,7 +2,6 @@ import XCTest
 @testable import ServiceLocator
 
 class ServiceLocatorConcurrencyTests: XCTestCase {
-
     class TestServiceA {
         static let instanceCount = AtomicInteger(value: 0)
         init() {
@@ -24,12 +23,12 @@ class ServiceLocatorConcurrencyTests: XCTestCase {
     class TestModule : ServiceLocatorModule {
         override func build() {
             
-            single(TestServiceB.self) {
-                TestServiceB(testServiceA : self.resolve())
-            }
-            
             single(TestServiceA.self) {
                 TestServiceA()
+            }
+            
+            single(TestServiceB.self) {
+                TestServiceB(testServiceA : self.resolve())
             }
         }
     }
@@ -39,13 +38,23 @@ class ServiceLocatorConcurrencyTests: XCTestCase {
             TestModule()
         }
         
+        let expectation = self.expectation(description: "ServiceLocator build")
+        
+        Task {
+            await serviceLocator.build()
+            expectation.fulfill()
+        }
+        
+        waitForExpectations(timeout: 10) // Adjust timeout as necessary
+        
+        
         let iterations = 10000
         let dispatchGroup = DispatchGroup()
         
         for _ in 0..<iterations {
             dispatchGroup.enter()
             DispatchQueue.global().async() {
-                var _ : TestServiceB = serviceLocator.resolve()
+                var _ : TestServiceB = try! serviceLocator.resolve()
                 dispatchGroup.leave()
             }
         }
