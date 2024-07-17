@@ -4,9 +4,6 @@ import Foundation
 public class ServiceLocator {
     static var enableLogging: Bool = false
     
-    /// Determines if singletons should be created eagerly or lazily
-    private let eagerly: Bool = true
-    
     /// Stores factories for eagerly created singletons
     private var singletonFactories: [DependencyWithKey] = []
     /// Stores already created singleton instances
@@ -48,11 +45,7 @@ public class ServiceLocator {
         guard singletons[key] == nil else {
             fatalError("[single] Factory for \(key) already exists.")
         }
-        if eagerly {
-            singletonFactories.append(DependencyWithKey(key: key, factory: factory))
-        } else {
-            singletons[key] = factory()
-        }
+        singletonFactories.append(DependencyWithKey(key: key, factory: factory))
     }
     
     /// Resolves and returns an instance of the specified type.
@@ -121,7 +114,6 @@ public class ServiceLocator {
         }
     }
 }
-
 
 /// Initializes and configures a new `ServiceLocator` optionally with provided modules configuration closures.
 /// - Parameter closure: An optional closure returning one or more configured modules.
