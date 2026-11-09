@@ -254,6 +254,59 @@ struct ServiceLocatorTests {
         #expect(resolved)
     }
 
+    @Test func waitingForSlowSingletonTimesOut() async throws {
+        let locator = ServiceLocator(waitTimeout: .milliseconds(100))
+        locator.single(Greeter.self) {
+            Thread.sleep(forTimeInterval: 0.5)
+            return EnglishGreeter()
+        }
+
+        let creator = Task.detached { _ = try locator.resolve(Greeter.self) }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(throws: ResolutionError.timedOut(type: "Greeter")) {
+            try locator.resolve(Greeter.self)
+        }
+        try await creator.value
+    }
+
+    @Test func noTimeoutWaitsForSlowSingleton() async throws {
+        let locator = ServiceLocator(waitTimeout: nil)
+        locator.single(Greeter.self) {
+            Thread.sleep(forTimeInterval: 0.3)
+            return EnglishGreeter()
+        }
+
+        let creator = Task.detached { _ = try locator.resolve(Greeter.self) }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(try locator.resolve(Greeter.self) is EnglishGreeter)
+        try await creator.value
+    }
+
+    @Test @MainActor func waitingForBlockedMainThreadTimesOutAndCanRetry() async throws {
+        let locator = ServiceLocator(waitTimeout: .milliseconds(100))
+        let created = Locked(0)
+        locator.single(Greeter.self, onMainActor: true) {
+            created.withValue { $0 += 1 }
+            return EnglishGreeter()
+        }
+
+        let background = Task.detached { () -> ResolutionError? in
+            do {
+                _ = try locator.resolve(Greeter.self)
+                return nil
+            } catch {
+                return error as? ResolutionError
+            }
+        }
+        _ = blockMain(for: 0.3) { true }
+
+        #expect(await background.value == .timedOut(type: "Greeter"))
+        #expect(try locator.resolve(Greeter.self) is EnglishGreeter)
+        #expect(created.withValue { $0 } == 1)
+    }
+
     @Test func resetClearsRegistrationsAndInstances() throws {
         let locator = ServiceLocator()
         locator.single(EnglishGreeter.self) { EnglishGreeter() }

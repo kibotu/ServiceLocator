@@ -61,7 +61,7 @@ let locator = startServiceLocator {
 await locator.build() // optional: creates singletons now, so misconfiguration fails at launch
 ```
 
-Singletons are created on first resolve, or by `build()`, in any order. `build()` initializes them **in parallel** on background threads: a singleton whose factory calls `resolve()` waits only for the singletons it needs, and each is created exactly once. Factories therefore must not assume the main thread, unless registered with `onMainActor: true`. Circular dependencies throw instead of deadlocking. Registering a type twice traps.
+Singletons are created on first resolve, or by `build()`, in any order. `build()` initializes them **in parallel** on background threads: a singleton whose factory calls `resolve()` waits only for the singletons it needs, and each is created exactly once. Factories therefore must not assume the main thread, unless registered with `onMainActor: true`. Circular dependencies throw instead of deadlocking. A resolve that waits longer than `waitTimeout` (default 10 seconds) for another thread throws `ResolutionError.timedOut` instead of hanging; pass `waitTimeout: nil` to wait forever, e.g. `startServiceLocator(logger: nil, waitTimeout: .seconds(30)) { AppModule() }`. Registering a type twice traps.
 
 #### 3. Retrieve dependencies
 
@@ -77,7 +77,7 @@ func doSomething() {
 }
 ```
 
-Or directly. `resolve` throws a `ResolutionError` (`.notRegistered`, `.circularDependency`):
+Or directly. `resolve` throws a `ResolutionError` (`.notRegistered`, `.circularDependency`, `.timedOut`):
 
 ```swift
 let configProvider: ConfigProvider = try locator.resolve()
@@ -171,7 +171,7 @@ Add the dependency to your `Package.swift`
 
 ## Requirements
 
-- iOS 16.0 or later
+- iOS 16.0, macOS 13.0, tvOS 16.0, watchOS 9.0, visionOS 1.0 or later
 - Xcode 16.0 or later
 - Swift 6.0 or later (Swift 6 language mode clean; `ServiceLocator` is `Sendable` and thread-safe)
                             
