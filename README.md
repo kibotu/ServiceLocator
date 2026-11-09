@@ -128,7 +128,17 @@ func doSomething() {
 ### Enabling Logging
 
 ```swift
-let locator = startServiceLocator(enableLogging: true) { AppModule() }
+let locator = startServiceLocator(logger: ServiceLocator.printLogger) { AppModule() }
+```
+
+The logger receives registrations, every resolve with its requester (`Module/File.swift#property:line`), builds and failures. Plug in your own logging, and check a runtime flag before evaluating the lazy message:
+
+```swift
+let locator = startServiceLocator(logger: { message in
+    if isServiceLocatorLoggingOn { Log.debug(message()) }
+}) {
+    AppModule()
+}
 ```
 
 ## How to install

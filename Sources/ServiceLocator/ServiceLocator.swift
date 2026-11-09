@@ -20,16 +20,24 @@ public final class ServiceLocator: @unchecked Sendable {
 
     // Guards everything below; `wait()` parks threads that need a singleton still being created.
     private let condition = NSCondition()
-    private let isLoggingEnabled: Bool
+    private let logger: Logger?
     private var registrations: [ObjectIdentifier: Registration] = [:]
     private var singletonTypes: [Any.Type] = []
     private var slots: [ObjectIdentifier: Slot] = [:]
     private var waitingOn: [ObjectIdentifier: ObjectIdentifier] = [:]
     private var activeFactories: [ObjectIdentifier: [ObjectIdentifier]] = [:]
 
-    /// - Parameter enableLogging: Prints registrations and resolutions, for debugging.
-    public init(enableLogging: Bool = false) {
-        isLoggingEnabled = enableLogging
+    /// Receives diagnostics: registrations, every resolve with its call site, builds and failures.
+    /// The message is built lazily, so a logger that checks a runtime flag first costs nothing when off:
+    /// `{ message in if debugFlag { os_log("\(message())") } }`.
+    public typealias Logger = @Sendable (_ message: () -> String) -> Void
+
+    /// A ready-made ``Logger`` that prints.
+    public static let printLogger: Logger = { print("[ServiceLocator] \($0())") }
+
+    /// - Parameter logger: Receives diagnostics; `nil` (default) disables logging.
+    public init(logger: Logger? = nil) {
+        self.logger = logger
     }
 
     /// Registers a factory that creates a new instance on every resolve.
@@ -53,13 +61,20 @@ public final class ServiceLocator: @unchecked Sendable {
 
     /// Resolves an instance of `T`.
     /// - Throws: ``ResolutionError`` if `T` is not registered or depends on itself.
+    /// `fileID`, `function` and `line` identify the requester and show up in logs.
     public func resolve<T>(
         _ type: T.Type = T.self,
-        file: StaticString = #fileID,
+        fileID: StaticString = #fileID,
+        function: StaticString = #function,
         line: UInt = #line
     ) throws -> T {
-        log("resolve \(type) from \(file):\(line)")
-        return try instance(of: type) as! T
+        log("resolve \(type) by \(fileID)#\(function):\(line)")
+        do {
+            return try instance(of: type) as! T
+        } catch {
+            log("failed to resolve \(type) by \(fileID)#\(function):\(line): \(error)")
+            throw error
+        }
     }
 
     /// Creates all registered singletons in parallel, so misconfiguration surfaces at launch rather
@@ -174,17 +189,22 @@ public final class ServiceLocator: @unchecked Sendable {
     }
 
     private func log(_ message: @autoclosure () -> String) {
-        if isLoggingEnabled { print("[ServiceLocator] \(message())") }
+        logger?(message)
     }
 }
 
 /// Creates a `ServiceLocator`, optionally registering a root module (which can nest others via `module { }`).
 /// Call ``ServiceLocator/build()`` afterwards to create singletons eagerly and in parallel.
+public func startServiceLocator(_ module: (() -> ServiceLocatorModule)? = nil) -> ServiceLocator {
+    startServiceLocator(logger: nil, module)
+}
+
+/// Same, with a ``ServiceLocator/Logger`` that receives registrations, resolves and failures.
 public func startServiceLocator(
-    enableLogging: Bool = false,
+    logger: ServiceLocator.Logger?,
     _ module: (() -> ServiceLocatorModule)? = nil
 ) -> ServiceLocator {
-    let locator = ServiceLocator(enableLogging: enableLogging)
+    let locator = ServiceLocator(logger: logger)
     if let module { locator.module(module) }
     return locator
 }

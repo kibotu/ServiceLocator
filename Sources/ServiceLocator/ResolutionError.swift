@@ -9,8 +9,9 @@ public enum ResolutionError: Error, Equatable, CustomStringConvertible, Localize
 
     public var description: String {
         switch self {
-        case .notRegistered(let type): "No registration for \(type)"
-        case .circularDependency(let type): "Circular dependency while resolving \(type)"
+        case .notRegistered(let type):
+            "No registration for \(type). Registrations match the exact type: register it with single(\(type).self) { ... } or factory(\(type).self) { ... }, and resolve it as that type, not as a protocol it conforms to."
+        case .circularDependency(let type): "Circular dependency while resolving \(type): its factory (transitively) resolves \(type) again"
         }
     }
 

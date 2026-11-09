@@ -5,24 +5,35 @@
 /// retain cycle with it. Keep the locator alive for the lifetime of the app.
 open class Dependency<T> {
     private weak var serviceLocator: ServiceLocator?
-    private let file: StaticString
+    private let fileID: StaticString
+    private let function: StaticString
     private let line: UInt
 
-    public init(_ serviceLocator: ServiceLocator, file: StaticString = #fileID, line: UInt = #line) {
+    /// The declaration site (file, property name, line) is captured for logs and crash messages.
+    public init(
+        _ serviceLocator: ServiceLocator,
+        fileID: StaticString = #fileID,
+        function: StaticString = #function,
+        line: UInt = #line
+    ) {
         self.serviceLocator = serviceLocator
-        self.file = file
+        self.fileID = fileID
+        self.function = function
         self.line = line
     }
 
     /// Resolves `T`. Traps, pointing at the declaration site, if the locator is gone or `T` can't be resolved.
     public final func resolvedWrappedValue() -> T {
         guard let serviceLocator else {
-            fatalError("ServiceLocator was deallocated before resolving \(T.self)", file: file, line: line)
+            fatalError(
+                "ServiceLocator was deallocated before \(fileID)#\(function) could resolve \(T.self)",
+                file: fileID, line: line
+            )
         }
         do {
-            return try serviceLocator.resolve(T.self, file: file, line: line)
+            return try serviceLocator.resolve(T.self, fileID: fileID, function: function, line: line)
         } catch {
-            fatalError("Failed to resolve \(T.self): \(error)", file: file, line: line)
+            fatalError("Failed to resolve \(T.self) for \(fileID)#\(function): \(error)", file: fileID, line: line)
         }
     }
 }

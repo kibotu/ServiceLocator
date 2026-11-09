@@ -28,11 +28,16 @@ open class ServiceLocatorModule {
 
     /// Resolves a dependency inside a factory. Traps if it cannot be resolved, because a missing
     /// registration is a programmer error; use `ServiceLocator.resolve` to handle the error instead.
-    public final func resolve<T>(_ type: T.Type = T.self, file: StaticString = #fileID, line: UInt = #line) -> T {
+    public final func resolve<T>(
+        _ type: T.Type = T.self,
+        fileID: StaticString = #fileID,
+        function: StaticString = #function,
+        line: UInt = #line
+    ) -> T {
         do {
-            return try locator.resolve(type, file: file, line: line)
+            return try locator.resolve(type, fileID: fileID, function: function, line: line)
         } catch {
-            fatalError("Failed to resolve \(type): \(error)", file: file, line: line)
+            fatalError("Failed to resolve \(type) by \(fileID)#\(function): \(error)", file: fileID, line: line)
         }
     }
 }

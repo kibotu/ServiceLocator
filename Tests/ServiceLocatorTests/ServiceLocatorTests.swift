@@ -140,6 +140,29 @@ struct ServiceLocatorTests {
         #expect(failures.withValue { $0 } >= 1)
     }
 
+    @Test func loggerReportsRegistrationResolveAndFailureWithCallSite() throws {
+        let lines = Locked<[String]>([])
+        let locator = ServiceLocator { message in lines.withValue { $0.append(message()) } }
+        locator.single(EnglishGreeter.self) { EnglishGreeter() }
+
+        _ = try locator.resolve(EnglishGreeter.self)
+        _ = try? locator.resolve(Consumer.self)
+
+        let log = lines.withValue { $0 }
+        #expect(log.contains("register EnglishGreeter"))
+        #expect(log.contains { $0.hasPrefix("resolve EnglishGreeter by ServiceLocatorTests/ServiceLocatorTests.swift#loggerReportsRegistrationResolveAndFailureWithCallSite():") })
+        #expect(log.contains { $0.hasPrefix("failed to resolve Consumer by ServiceLocatorTests/ServiceLocatorTests.swift#") && $0.contains("No registration for Consumer") })
+    }
+
+    @Test func startServiceLocatorAcceptsTrailingModuleAndLogger() throws {
+        let logged = Locked(false)
+        let locator = startServiceLocator(logger: { _ in logged.withValue { $0 = true } }) {
+            ServiceLocatorModule()
+        }
+        _ = try? locator.resolve(Consumer.self)
+        #expect(logged.withValue { $0 })
+    }
+
     @Test func resetClearsRegistrationsAndInstances() throws {
         let locator = ServiceLocator()
         locator.single(EnglishGreeter.self) { EnglishGreeter() }
