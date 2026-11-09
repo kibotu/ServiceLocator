@@ -5,20 +5,27 @@ import Foundation
 /// Registrations are keyed by the exact type you pass, so register protocols as
 /// `single(Repository.self) { ... }` and resolve them as `Repository`.
 ///
-/// Factories run while an internal recursive lock is held, which guarantees a singleton is
-/// created once. Don't block on another thread that resolves from the same locator inside a factory.
+/// Factories run outside any lock, so independent singletons initialize in parallel in ``build()``.
+/// A factory that resolves a singleton another thread is still creating waits for just that one.
 public final class ServiceLocator: @unchecked Sendable {
     private enum Registration {
         case factory(() -> Any)
         case singleton(() -> Any)
     }
 
-    private let lock = NSRecursiveLock()
+    private enum Slot {
+        case creating(owner: ObjectIdentifier)
+        case ready(Any)
+    }
+
+    // Guards everything below; `wait()` parks threads that need a singleton still being created.
+    private let condition = NSCondition()
     private let isLoggingEnabled: Bool
     private var registrations: [ObjectIdentifier: Registration] = [:]
     private var singletonTypes: [Any.Type] = []
-    private var instances: [ObjectIdentifier: Any] = [:]
-    private var resolving: Set<ObjectIdentifier> = []
+    private var slots: [ObjectIdentifier: Slot] = [:]
+    private var waitingOn: [ObjectIdentifier: ObjectIdentifier] = [:]
+    private var activeFactories: [ObjectIdentifier: [ObjectIdentifier]] = [:]
 
     /// - Parameter enableLogging: Prints registrations and resolutions, for debugging.
     public init(enableLogging: Bool = false) {
@@ -34,17 +41,14 @@ public final class ServiceLocator: @unchecked Sendable {
     /// Registers a singleton, created on first resolve or by ``build()``, whichever comes first.
     /// Registering a type twice is a programmer error and traps.
     public func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        lock.withLock { singletonTypes.append(type) }
-        register(type, .singleton { factory() })
+        register(type, .singleton { factory() }, isSingleton: true)
     }
 
     /// Registers everything the module declares in ``ServiceLocatorModule/build()``.
     public func module(_ module: () -> ServiceLocatorModule) {
-        lock.withLock {
-            let module = module()
-            module.locator = self
-            module.build()
-        }
+        let module = module()
+        module.locator = self
+        module.build()
     }
 
     /// Resolves an instance of `T`.
@@ -55,63 +59,118 @@ public final class ServiceLocator: @unchecked Sendable {
         line: UInt = #line
     ) throws -> T {
         log("resolve \(type) from \(file):\(line)")
-        return try lock.withLock { try instance(of: type) as! T }
+        return try instance(of: type) as! T
     }
 
-    /// Creates all registered singletons now, so misconfiguration surfaces at launch rather than
-    /// on first use. Singletons that already exist are kept. Traps if a factory cannot resolve a dependency.
-    public func build() {
-        lock.withLock {
-            for type in singletonTypes {
-                log("build \(type)")
-                do {
-                    _ = try instance(of: type)
-                } catch {
-                    fatalError("Failed to build \(type): \(error)")
+    /// Creates all registered singletons in parallel, so misconfiguration surfaces at launch rather
+    /// than on first use. Each singleton waits only for the dependencies its factory resolves.
+    /// Factories run on background threads. Singletons that already exist are kept.
+    /// Traps if a factory cannot resolve a dependency.
+    public func build() async {
+        let types = condition.withLock { singletonTypes }
+        await withCheckedContinuation { continuation in
+            let group = DispatchGroup()
+            for type in types {
+                DispatchQueue.global().async(group: group) { [self] in
+                    log("build \(type)")
+                    do {
+                        _ = try instance(of: type)
+                    } catch {
+                        fatalError("Failed to build \(type): \(error)")
+                    }
+                }
+            }
+            group.notify(queue: .global()) { continuation.resume() }
+        }
+    }
+
+    /// Removes all registrations and singleton instances. Don't call while ``build()`` is running.
+    public func reset() {
+        condition.withLock {
+            registrations.removeAll()
+            singletonTypes.removeAll()
+            slots.removeAll()
+        }
+        log("reset")
+    }
+
+    private func register<T>(_ type: T.Type, _ registration: Registration, isSingleton: Bool = false) {
+        condition.withLock {
+            let key = ObjectIdentifier(type)
+            precondition(registrations[key] == nil, "\(type) is already registered")
+            registrations[key] = registration
+            if isSingleton { singletonTypes.append(type) }
+        }
+        log("register \(type)")
+    }
+
+    private func instance(of type: Any.Type) throws -> Any {
+        let key = ObjectIdentifier(type)
+        let thread = ObjectIdentifier(Thread.current)
+        condition.lock()
+        while true {
+            switch slots[key] {
+            case .ready(let value):
+                condition.unlock()
+                return value
+
+            case .creating:
+                if wouldDeadlock(waitingFor: key, on: thread) {
+                    condition.unlock()
+                    throw ResolutionError.circularDependency(type: "\(type)")
+                }
+                waitingOn[thread] = key
+                condition.wait()
+                waitingOn[thread] = nil
+
+            case nil:
+                guard let registration = registrations[key] else {
+                    condition.unlock()
+                    throw ResolutionError.notRegistered(type: "\(type)")
+                }
+                switch registration {
+                case .factory(let make):
+                    if activeFactories[thread, default: []].contains(key) {
+                        condition.unlock()
+                        throw ResolutionError.circularDependency(type: "\(type)")
+                    }
+                    activeFactories[thread, default: []].append(key)
+                    condition.unlock()
+
+                    let value = make()
+
+                    condition.withLock {
+                        activeFactories[thread]?.removeLast()
+                        if activeFactories[thread]?.isEmpty == true { activeFactories[thread] = nil }
+                    }
+                    return value
+
+                case .singleton(let make):
+                    slots[key] = .creating(owner: thread)
+                    condition.unlock()
+
+                    let value = make()
+
+                    condition.withLock {
+                        slots[key] = .ready(value)
+                        condition.broadcast()
+                    }
+                    return value
                 }
             }
         }
     }
 
-    /// Removes all registrations and singleton instances.
-    public func reset() {
-        lock.withLock {
-            registrations.removeAll()
-            singletonTypes.removeAll()
-            instances.removeAll()
+    // Follows "thread waits for singleton owned by thread" edges; reaching `thread` means a cycle.
+    // Callers must hold `condition`.
+    private func wouldDeadlock(waitingFor key: ObjectIdentifier, on thread: ObjectIdentifier) -> Bool {
+        var key = key
+        while case .creating(let owner)? = slots[key] {
+            if owner == thread { return true }
+            guard let next = waitingOn[owner] else { return false }
+            key = next
         }
-        log("reset")
-    }
-
-    private func register<T>(_ type: T.Type, _ registration: Registration) {
-        lock.withLock {
-            let key = ObjectIdentifier(type)
-            precondition(registrations[key] == nil, "\(type) is already registered")
-            registrations[key] = registration
-        }
-        log("register \(type)")
-    }
-
-    // Callers must hold `lock`.
-    private func instance(of type: Any.Type) throws -> Any {
-        let key = ObjectIdentifier(type)
-        if let existing = instances[key] { return existing }
-        guard let registration = registrations[key] else {
-            throw ResolutionError.notRegistered(type: "\(type)")
-        }
-        guard resolving.insert(key).inserted else {
-            throw ResolutionError.circularDependency(type: "\(type)")
-        }
-        defer { resolving.remove(key) }
-
-        switch registration {
-        case .factory(let make):
-            return make()
-        case .singleton(let make):
-            let created = make()
-            instances[key] = created
-            return created
-        }
+        return false
     }
 
     private func log(_ message: @autoclosure () -> String) {
@@ -120,7 +179,7 @@ public final class ServiceLocator: @unchecked Sendable {
 }
 
 /// Creates a `ServiceLocator`, optionally registering a root module (which can nest others via `module { }`).
-/// Call ``ServiceLocator/build()`` afterwards to create singletons eagerly.
+/// Call ``ServiceLocator/build()`` afterwards to create singletons eagerly and in parallel.
 public func startServiceLocator(
     enableLogging: Bool = false,
     _ module: (() -> ServiceLocatorModule)? = nil

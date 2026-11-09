@@ -58,10 +58,10 @@ Keep the locator alive for the lifetime of your app; `@Inject` holds it weakly.
 let locator = startServiceLocator {
     AppModule()
 }
-locator.build() // optional: creates singletons now, so misconfiguration fails at launch
+await locator.build() // optional: creates singletons now, so misconfiguration fails at launch
 ```
 
-Singletons are created on first resolve, or by `build()`, in any order. Registering a type twice traps.
+Singletons are created on first resolve, or by `build()`, in any order. `build()` initializes them **in parallel** on background threads: a singleton whose factory calls `resolve()` waits only for the singletons it needs, and each is created exactly once. Factories therefore must not assume the main thread. Circular dependencies throw instead of deadlocking. Registering a type twice traps.
 
 #### 3. Retrieve dependencies
 

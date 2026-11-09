@@ -45,7 +45,7 @@ struct ServiceLocatorTests {
         }
     }
 
-    @Test func buildCreatesSingletonsEagerlyAndOnlyOnce() throws {
+    @Test func buildCreatesSingletonsEagerlyAndOnlyOnce() async throws {
         let created = Locked(0)
         let locator = ServiceLocator()
         locator.single(EnglishGreeter.self) {
@@ -54,13 +54,13 @@ struct ServiceLocatorTests {
         }
 
         #expect(created.withValue { $0 } == 0)
-        locator.build()
-        locator.build()
+        await locator.build()
+        await locator.build()
         _ = try locator.resolve(EnglishGreeter.self)
         #expect(created.withValue { $0 } == 1)
     }
 
-    @Test func buildIsIndependentOfRegistrationOrder() throws {
+    @Test func buildIsIndependentOfRegistrationOrder() async throws {
         final class Order: ServiceLocatorModule {
             override func build() {
                 single(Consumer.self) { Consumer(greeter: self.resolve()) }
@@ -69,7 +69,7 @@ struct ServiceLocatorTests {
         }
         let locator = startServiceLocator { Order() }
 
-        locator.build()
+        await locator.build()
 
         #expect(try locator.resolve(Consumer.self).greeter is EnglishGreeter)
     }
@@ -87,6 +87,59 @@ struct ServiceLocatorTests {
         #expect(failure.withValue { $0 } as? ResolutionError == .circularDependency(type: "Greeter"))
     }
 
+    @Test func buildInitializesIndependentSingletonsInParallel() async throws {
+        final class Rendezvous: @unchecked Sendable {
+            let a = DispatchSemaphore(value: 0), b = DispatchSemaphore(value: 0)
+        }
+        let rendezvous = Rendezvous()
+        let met = Locked(0)
+        let locator = ServiceLocator()
+        locator.single(EnglishGreeter.self) {
+            rendezvous.a.signal()
+            if rendezvous.b.wait(timeout: .now() + 5) == .success { met.withValue { $0 += 1 } }
+            return EnglishGreeter()
+        }
+        locator.single(Consumer.self) {
+            rendezvous.b.signal()
+            if rendezvous.a.wait(timeout: .now() + 5) == .success { met.withValue { $0 += 1 } }
+            return Consumer(greeter: EnglishGreeter())
+        }
+
+        await locator.build()
+
+        #expect(met.withValue { $0 } == 2)
+    }
+
+    @Test func dependentWaitsForSlowDependency() async throws {
+        let locator = ServiceLocator()
+        locator.single(Greeter.self) {
+            Thread.sleep(forTimeInterval: 0.2)
+            return EnglishGreeter()
+        }
+        locator.single(Consumer.self) { Consumer(greeter: try! locator.resolve()) }
+
+        await locator.build()
+
+        #expect(try locator.resolve(Consumer.self).greeter as AnyObject === (locator.resolve(Greeter.self) as AnyObject))
+    }
+
+    @Test func crossThreadCycleThrowsInsteadOfDeadlocking() async {
+        let failures = Locked(0)
+        let locator = ServiceLocator()
+        locator.single(Greeter.self) {
+            do { _ = try locator.resolve(Consumer.self) } catch { failures.withValue { $0 += 1 } }
+            return EnglishGreeter()
+        }
+        locator.single(Consumer.self) {
+            do { _ = try locator.resolve(Greeter.self) } catch { failures.withValue { $0 += 1 } }
+            return Consumer(greeter: EnglishGreeter())
+        }
+
+        await locator.build()
+
+        #expect(failures.withValue { $0 } >= 1)
+    }
+
     @Test func resetClearsRegistrationsAndInstances() throws {
         let locator = ServiceLocator()
         locator.single(EnglishGreeter.self) { EnglishGreeter() }
@@ -99,7 +152,7 @@ struct ServiceLocatorTests {
         #expect(try locator.resolve(EnglishGreeter.self) !== before)
     }
 
-    @Test func modulesCanNestAndResolveEachOther() throws {
+    @Test func modulesCanNestAndResolveEachOther() async throws {
         final class Inner: ServiceLocatorModule {
             override func build() { single(Greeter.self) { EnglishGreeter() } }
         }
@@ -111,7 +164,7 @@ struct ServiceLocatorTests {
         }
 
         let locator = startServiceLocator { Outer() }
-        locator.build()
+        await locator.build()
 
         #expect(try locator.resolve(Consumer.self).greeter is EnglishGreeter)
     }
