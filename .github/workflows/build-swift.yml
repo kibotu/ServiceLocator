@@ -4,13 +4,16 @@ on: [push]
 
 jobs:
   build:
-    name: Swift ${{ matrix.swift }} on ${{ matrix.os }}
+    name: macOS 27 / Xcode latest on ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest]
+        os: [xcode-27]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: swift-actions/setup-swift@v2
+      - uses: actions/checkout@v7
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: 'latest'
 
@@ -23,8 +26,18 @@ jobs:
           xcode-select -p
           echo "== Swift =="
           swift --version
+          echo "== iOS simulator runtimes =="
+          xcrun simctl list runtimes | grep -E '^iOS'
 
-      - name: Build
+      - name: Build (macOS)
         run: swift build
-      - name: Run tests
+
+      - name: Test (macOS)
         run: swift test
+
+      - name: Test on iPhone 18 Pro (iOS latest)
+        run: |
+          xcodebuild \
+            -scheme ServiceLocator \
+            -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=latest' \
+            test
