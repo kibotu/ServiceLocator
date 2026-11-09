@@ -1,7 +1,7 @@
 # ServiceLocator for iOS
 [![Build](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml/badge.svg)](https://github.com/kibotu/ServiceLocator/actions/workflows/build-swift.yml) [![GitHub Tag](https://img.shields.io/github/v/tag/kibotu/ServiceLocator?include_prereleases&sort=semver)](https://github.com/kibotu/ServiceLocator/releases) ![Static Badge](https://img.shields.io/badge/Platform%20-%20iOS%20-%20light_green)
 [![Static Badge](https://img.shields.io/badge/iOS%20-%20%3E%2016.0%20-%20light_green)](https://support.apple.com/en-us/101566)
-[![Static Badge](https://img.shields.io/badge/Swift%205.10%20-%20orange)](https://www.swift.org/blog/swift-5.10-released/)
+[![Static Badge](https://img.shields.io/badge/Swift%206%20-%20orange)](https://www.swift.org/blog/swift-6-released/)
 
 The Service Locator is a design pattern used to decouple the way objects are obtained from the concrete classes that implement them. This is achieved by centralizing object creation to a single location, known as a service locator.
 
@@ -52,54 +52,44 @@ class AppModule: ServiceLocatorModule {
 
 #### 2. Initialize the Service Locator
 
+Keep the locator alive for the lifetime of your app; `@Inject` holds it weakly.
+
 ```swift
-lazy var myServiceLocator = startServiceLocator {
+let locator = startServiceLocator {
     AppModule()
 }
-myServiceLocator.build()
+locator.build() // optional: creates singletons now, so misconfiguration fails at launch
 ```
 
-#### 3. Retrieve dependency
+Singletons are created on first resolve, or by `build()`, in any order. Registering a type twice traps.
 
-#### 3.1. In data structures
+#### 3. Retrieve dependencies
 
-Retrieve dependencies in classes or structs using @Inject. The property wrapper automatically resolves the dependency from the service locator:
+With `@Inject`, which resolves on every read (factories give a fresh instance each time):
 
 ```swift
-class MyCass {
-    @Inject(myServiceLocator) public var contactSheet: ContactSheet
+class MyClass {
+    @Inject(locator) var contactSheet: ContactSheet
 }
-```
 
-#### 3.2 Local Variable Injection in Functions
-
-For injecting dependencies within functions or methods, use @Inject before local variable declarations:
-
-```swift
 func doSomething() {
-    @Inject(myServiceLocator) var contactSheet: ContactSheet
-    // Use contactSheet here
+    @Inject(locator) var contactSheet: ContactSheet
 }
 ```
 
-#### 3.3 Direct Resolution with resolve
-
-If you prefer not using property wrappers, directly resolve dependencies using the service locator's resolve method:
+Or directly. `resolve` throws a `ResolutionError` (`.notRegistered`, `.circularDependency`):
 
 ```swift
-let configProvider : ConfigProvider = serviceLocator.resolve()
+let configProvider: ConfigProvider = try locator.resolve()
 ```
-#### 4. Resetting the Service Locator
 
-You can reset the ServiceLocator to its initial state, which can be useful in testing scenarios:
+Inside a module's factory closures, `resolve()` doesn't throw; it traps if the dependency is missing.
 
-```swift
-// Reset the entire service locator
-resetServiceLocator(myServiceLocator)
+Registrations also work without modules: `locator.single(Foo.self) { Foo() }`, `locator.factory(Bar.self) { Bar() }`.
 
-// Or, if you have direct access to the ServiceLocator instance:
-myServiceLocator.reset()
-```
+#### 4. Testing
+
+`reset()` clears all registrations and singletons. Prefer a fresh `ServiceLocator()` per test.
 
 #### Tips and Customizations
 
@@ -116,7 +106,7 @@ internal final class PluginInject<T>: Dependency<T> {
     }
 
     public init() {
-        super.init(MyPlugin.shared.myServiceLocator)
+        super.init(MyPlugin.shared.locator)
     }
 }
 ```
@@ -137,10 +127,8 @@ func doSomething() {
 
 ### Enabling Logging
 
-You can enable logging for the ServiceLocator to help with debugging:
-
 ```swift
-ServiceLocator.enableLogging = true
+let locator = startServiceLocator(enableLogging: true) { AppModule() }
 ```
 
 ## How to install
@@ -154,7 +142,7 @@ Add the dependency to your `Package.swift`
       ...
     ]
     dependencies: [
-        .package(url: "https://github.com/kibotu/ServiceLocator", from: "1.0.2"),
+        .package(url: "https://github.com/kibotu/ServiceLocator", from: "2.0.0"),
     ],
     targets: [
       ...
@@ -164,8 +152,8 @@ Add the dependency to your `Package.swift`
 ## Requirements
 
 - iOS 16.0 or later
-- Xcode 15.0 or later
-- Swift 5.10 or later
+- Xcode 16.0 or later
+- Swift 6.0 or later (Swift 6 language mode clean; `ServiceLocator` is `Sendable` and thread-safe)
                             
 Contributions welcome!
 

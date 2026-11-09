@@ -1,18 +1,18 @@
 import Foundation
 
-/// Error thrown when a dependency cannot be resolved
-struct ResolutionError: LocalizedError, CustomStringConvertible {
-    let message: String
-    
+/// Why a dependency could not be resolved.
+public enum ResolutionError: Error, Equatable, CustomStringConvertible, LocalizedError {
+    /// Nothing is registered for the requested type.
+    case notRegistered(type: String)
+    /// The type (transitively) depends on itself.
+    case circularDependency(type: String)
+
     public var description: String {
-        errorDescription
+        switch self {
+        case .notRegistered(let type): "No registration for \(type)"
+        case .circularDependency(let type): "Circular dependency while resolving \(type)"
+        }
     }
 
-    var errorDescription: String {
-        localizedDescription
-    }
-    
-    public var localizedDescription: String {
-        message
-    }
+    public var errorDescription: String? { description }
 }

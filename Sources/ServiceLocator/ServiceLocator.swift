@@ -1,129 +1,131 @@
 import Foundation
 
-/// A service locator that manages dependency injection for an application
-public class ServiceLocator {
-    static var enableLogging: Bool = false
-    
-    /// Stores factories for eagerly created singletons
-    private var singletonFactories: [DependencyWithKey] = []
-    /// Stores already created singleton instances
-    private var singletons: [String: Any] = [:]
-    /// Stores factories for non-singleton dependencies
-    private var factories: [String: () -> Any] = [:]
-    
-    /// Lock for thread-safe access to factories
-    private let factoryLock = NSRecursiveLock()
-    /// Lock for thread-safe access to singletons
-    private let singleLock = NSRecursiveLock()
-    /// Lock for thread-safe module registration
-    private var moduleLock = NSRecursiveLock()
-    
-    /// Registers a factory closure that will be used to create an instance of a service.
-    /// - Parameters:
-    ///   - type: The type of the service to register.
-    ///   - factory: A closure that returns an instance of the service.
-    internal func factory<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        let key = String(describing: type)
-        factoryLock.lock()
-        defer { factoryLock.unlock() }
-        
-        guard factories[key] == nil else {
-            fatalError("[factory] Factory for \(key) already exists.")
-        }
-        
-        factories[key] = factory
+/// A thread-safe registry that creates and hands out your app's services.
+///
+/// Registrations are keyed by the exact type you pass, so register protocols as
+/// `single(Repository.self) { ... }` and resolve them as `Repository`.
+///
+/// Factories run while an internal recursive lock is held, which guarantees a singleton is
+/// created once. Don't block on another thread that resolves from the same locator inside a factory.
+public final class ServiceLocator: @unchecked Sendable {
+    private enum Registration {
+        case factory(() -> Any)
+        case singleton(() -> Any)
     }
-    
-    /// Registers a singleton factory closure that will be used to create and cache an instance of a service.
-    /// - Parameters:
-    ///   - type: The type of the singleton service to register.
-    ///   - factory: A closure that creates and returns a single instance of the service.
-    internal func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        let key = String(describing: type)
-        singleLock.lock()
-        defer { singleLock.unlock() }
-        guard singletons[key] == nil else {
-            fatalError("[single] Factory for \(key) already exists.")
-        }
-        singletonFactories.append(DependencyWithKey(key: key, factory: factory))
+
+    private let lock = NSRecursiveLock()
+    private let isLoggingEnabled: Bool
+    private var registrations: [ObjectIdentifier: Registration] = [:]
+    private var singletonTypes: [Any.Type] = []
+    private var instances: [ObjectIdentifier: Any] = [:]
+    private var resolving: Set<ObjectIdentifier> = []
+
+    /// - Parameter enableLogging: Prints registrations and resolutions, for debugging.
+    public init(enableLogging: Bool = false) {
+        isLoggingEnabled = enableLogging
     }
-    
-    /// Resolves and returns an instance of the specified type.
-    /// - Parameters:
-    ///   - file: The file where the resolution is requested (default: current file)
-    ///   - fileId: The file ID where the resolution is requested (default: current file ID)
-    ///   - function: The function where the resolution is requested (default: current function)
-    ///   - line: The line number where the resolution is requested (default: current line)
-    /// - Returns: An instance of the specified type
-    /// - Throws: `ResolutionError` if the dependency cannot be resolved
-    public func resolve<T>(_ file: String = #file, _ fileId: String = #fileID, _ function: String = #function, _ line: Int = #line) throws -> T {
-        let key = String(describing: T.self)
-        Self.log("[\(file)][resolve] \(key) by \(fileId)#\(function):\(line)")
-        
-        if let singletonInstance = singletons[key] as? T {
-            return singletonInstance
-        } else if let factoryInstance = factories[key]?() as? T {
-            return factoryInstance
-        } else {
-            throw ResolutionError(message: "No registered factory for \(key)")
+
+    /// Registers a factory that creates a new instance on every resolve.
+    /// Registering a type twice is a programmer error and traps.
+    public func factory<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
+        register(type, .factory { factory() })
+    }
+
+    /// Registers a singleton, created on first resolve or by ``build()``, whichever comes first.
+    /// Registering a type twice is a programmer error and traps.
+    public func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
+        lock.withLock { singletonTypes.append(type) }
+        register(type, .singleton { factory() })
+    }
+
+    /// Registers everything the module declares in ``ServiceLocatorModule/build()``.
+    public func module(_ module: () -> ServiceLocatorModule) {
+        lock.withLock {
+            let module = module()
+            module.locator = self
+            module.build()
         }
     }
-    
-    /// Registers a module with the service locator
-    /// - Parameter closure: A closure that returns a `ServiceLocatorModule`
-    internal func module(_ closure: @escaping () -> ServiceLocatorModule) {
-        moduleLock.lock()
-        defer { moduleLock.unlock() }
-        closure().buildInternal(locator: self)
+
+    /// Resolves an instance of `T`.
+    /// - Throws: ``ResolutionError`` if `T` is not registered or depends on itself.
+    public func resolve<T>(
+        _ type: T.Type = T.self,
+        file: StaticString = #fileID,
+        line: UInt = #line
+    ) throws -> T {
+        log("resolve \(type) from \(file):\(line)")
+        return try lock.withLock { try instance(of: type) as! T }
     }
-    
-    /// Builds all eagerly loaded singletons
-    /// - Parameter file: The file where the build is initiated (default: current file)
-    @MainActor
-    public func build(_ file: String = #file) async {
-        let filename = file
-        for dependency in singletonFactories {
-            Self.log("[\(filename)][build] \(dependency.key)")
-            singletons[dependency.key] = dependency.factory()
+
+    /// Creates all registered singletons now, so misconfiguration surfaces at launch rather than
+    /// on first use. Singletons that already exist are kept. Traps if a factory cannot resolve a dependency.
+    public func build() {
+        lock.withLock {
+            for type in singletonTypes {
+                log("build \(type)")
+                do {
+                    _ = try instance(of: type)
+                } catch {
+                    fatalError("Failed to build \(type): \(error)")
+                }
+            }
         }
     }
-    
-    /// Resets the ServiceLocator to its initial state
+
+    /// Removes all registrations and singleton instances.
     public func reset() {
-        factoryLock.lock()
-        singleLock.lock()
-        moduleLock.lock()
-        defer {
-            factoryLock.unlock()
-            singleLock.unlock()
-            moduleLock.unlock()
+        lock.withLock {
+            registrations.removeAll()
+            singletonTypes.removeAll()
+            instances.removeAll()
         }
-
-        singletonFactories.removeAll()
-        singletons.removeAll()
-        factories.removeAll()
-
-        Self.log("[reset] ServiceLocator has been reset")
+        log("reset")
     }
-    
-    /// Logs a message if logging is enabled
-    /// - Parameter message: The message to log
-    private static func log(_ message: String) {
-        if Self.enableLogging {
-            print("[ServiceLocator]\(message)")
+
+    private func register<T>(_ type: T.Type, _ registration: Registration) {
+        lock.withLock {
+            let key = ObjectIdentifier(type)
+            precondition(registrations[key] == nil, "\(type) is already registered")
+            registrations[key] = registration
         }
+        log("register \(type)")
+    }
+
+    // Callers must hold `lock`.
+    private func instance(of type: Any.Type) throws -> Any {
+        let key = ObjectIdentifier(type)
+        if let existing = instances[key] { return existing }
+        guard let registration = registrations[key] else {
+            throw ResolutionError.notRegistered(type: "\(type)")
+        }
+        guard resolving.insert(key).inserted else {
+            throw ResolutionError.circularDependency(type: "\(type)")
+        }
+        defer { resolving.remove(key) }
+
+        switch registration {
+        case .factory(let make):
+            return make()
+        case .singleton(let make):
+            let created = make()
+            instances[key] = created
+            return created
+        }
+    }
+
+    private func log(_ message: @autoclosure () -> String) {
+        if isLoggingEnabled { print("[ServiceLocator] \(message())") }
     }
 }
 
-/// Initializes and configures a new `ServiceLocator` optionally with provided modules configuration closures.
-/// - Parameter closure: An optional closure returning one or more configured modules.
-/// - Returns: A fully initialized `ServiceLocator` object ready to use in your application.
-public func startServiceLocator(_ closure: (() -> ServiceLocatorModule)? = nil) -> ServiceLocator {
-    let serviceLocator = ServiceLocator()
-    if let modules = closure?() {
-        serviceLocator.module {
-            modules
-        }
-    }
-    return serviceLocator
+/// Creates a `ServiceLocator`, optionally registering a root module (which can nest others via `module { }`).
+/// Call ``ServiceLocator/build()`` afterwards to create singletons eagerly.
+public func startServiceLocator(
+    enableLogging: Bool = false,
+    _ module: (() -> ServiceLocatorModule)? = nil
+) -> ServiceLocator {
+    let locator = ServiceLocator(enableLogging: enableLogging)
+    if let module { locator.module(module) }
+    return locator
 }
