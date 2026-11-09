@@ -93,7 +93,7 @@ single(Router.self, onMainActor: true) {
 }
 ```
 
-The factory then runs on the main thread no matter who resolves or builds (inline if already on main, so it can't deadlock itself), while everything else still initializes in parallel. `build()` serves main-thread factories while the main thread is free; code that blocks the main thread on a singleton still works because the waiting main thread runs the queued main-thread factories itself.
+The factory then runs on the main thread no matter who resolves or builds (inline if already on main), while everything else still initializes in parallel. This needs the main thread to be either free or itself resolving from the locator, which then runs the queued main-thread factories instead of blocking. Don't block the main thread any other way (semaphores, `DispatchGroup.wait`) while background threads may resolve `onMainActor` services.
 
 Registrations also work without modules: `locator.single(Foo.self) { Foo() }`, `locator.factory(Bar.self) { Bar() }`.
 

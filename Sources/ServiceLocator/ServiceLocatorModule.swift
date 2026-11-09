@@ -34,10 +34,6 @@ open class ServiceLocatorModule {
         function: StaticString = #function,
         line: UInt = #line
     ) -> T {
-        do {
-            return try locator.resolve(type, fileID: fileID, function: function, line: line)
-        } catch {
-            fatalError("Failed to resolve \(type) by \(fileID)#\(function): \(error)", file: fileID, line: line)
-        }
+        locator.resolveOrTrap(type, fileID: fileID, function: function, line: line)
     }
 }

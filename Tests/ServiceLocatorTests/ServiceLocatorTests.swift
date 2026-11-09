@@ -16,10 +16,10 @@ private final class Locked<Value>: @unchecked Sendable {
     func withValue<R>(_ body: (inout Value) -> R) -> R { lock.withLock { body(&value) } }
 }
 
-// Blocks the main thread on a singleton that a worker is still creating.
-@MainActor private func blockMainResolvingConsumer(_ locator: ServiceLocator) throws -> Bool {
-    Thread.sleep(forTimeInterval: 0.05)
-    return try locator.resolve(Consumer.self).greeter is EnglishGreeter
+// Blocks the main thread (outside the locator), then resolves on it.
+@MainActor private func blockMain(for seconds: TimeInterval, thenResolve resolve: () throws -> Bool) rethrows -> Bool {
+    Thread.sleep(forTimeInterval: seconds)
+    return try resolve()
 }
 
 struct ServiceLocatorTests {
@@ -217,10 +217,41 @@ struct ServiceLocatorTests {
         }
 
         let build = Task.detached { await locator.build() }
-        let resolvedGreeter = try blockMainResolvingConsumer(locator)
+        let resolved = try blockMain(for: 0.05) { try locator.resolve(Consumer.self).greeter is EnglishGreeter }
         await build.value
 
-        #expect(resolvedGreeter)
+        #expect(resolved)
+    }
+
+    @Test @MainActor func mainThreadAlreadyWaitingIsWokenForMainActorWorkQueuedLater() async throws {
+        let locator = ServiceLocator()
+        locator.factory(Greeter.self, onMainActor: true) { EnglishGreeter() }
+        locator.single(Consumer.self) {
+            Thread.sleep(forTimeInterval: 0.2)
+            return Consumer(greeter: try! locator.resolve())
+        }
+
+        let build = Task.detached { await locator.build() }
+        let resolved = try blockMain(for: 0.05) { try locator.resolve(Consumer.self).greeter is EnglishGreeter }
+        await build.value
+
+        #expect(resolved)
+    }
+
+    @Test @MainActor func backgroundThreadsWaitForMainActorSingletonWhileMainIsBusy() async throws {
+        let locator = ServiceLocator()
+        locator.single(Greeter.self, onMainActor: true) { EnglishGreeter() }
+
+        let first = Task.detached { _ = try locator.resolve(Greeter.self) }
+        let second = Task.detached {
+            try await Task.sleep(for: .milliseconds(50))
+            _ = try locator.resolve(Greeter.self)
+        }
+        let resolved = try blockMain(for: 0.2) { try locator.resolve(Greeter.self) is EnglishGreeter }
+        try await first.value
+        try await second.value
+
+        #expect(resolved)
     }
 
     @Test func resetClearsRegistrationsAndInstances() throws {

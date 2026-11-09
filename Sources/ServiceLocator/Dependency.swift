@@ -30,10 +30,6 @@ open class Dependency<T> {
                 file: fileID, line: line
             )
         }
-        do {
-            return try serviceLocator.resolve(T.self, fileID: fileID, function: function, line: line)
-        } catch {
-            fatalError("Failed to resolve \(T.self) for \(fileID)#\(function): \(error)", file: fileID, line: line)
-        }
+        return serviceLocator.resolveOrTrap(T.self, fileID: fileID, function: function, line: line)
     }
 }

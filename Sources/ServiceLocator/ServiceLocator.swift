@@ -8,8 +8,15 @@ import Foundation
 /// Factories run outside any lock, so independent singletons initialize in parallel in ``build()``.
 /// A factory that resolves a singleton another thread is still creating waits for just that one.
 public final class ServiceLocator: @unchecked Sendable {
-    // Factories are intentionally not Sendable; the locator guarantees where and when they run.
-    private struct Registration: @unchecked Sendable {
+    /// Receives diagnostics: registrations, every resolve with its call site, builds and failures.
+    /// The message is built lazily, so a logger that checks a runtime flag first costs nothing when off:
+    /// `{ message in if debugFlag { os_log("\(message())") } }`.
+    public typealias Logger = @Sendable (_ message: () -> String) -> Void
+
+    /// A ready-made ``Logger`` that prints.
+    public static let printLogger: Logger = { print("[ServiceLocator] \($0())") }
+
+    private struct Registration {
         let make: () -> Any
         let isSingleton: Bool
         let onMainActor: Bool
@@ -20,23 +27,23 @@ public final class ServiceLocator: @unchecked Sendable {
         case ready(Any)
     }
 
-    // Guards everything below; `wait()` parks threads that need a singleton still being created.
+    // What a parked thread waits for; edges of the wait-for graph used to detect cycles.
+    private enum Wait {
+        case singleton(ObjectIdentifier)
+        case mainThread
+    }
+
+    private static let mainThread = ObjectIdentifier(Thread.main)
+
+    // Guards everything below; `wait()` parks threads until a singleton or main-thread job completes.
     private let condition = NSCondition()
     private let logger: Logger?
     private var registrations: [ObjectIdentifier: Registration] = [:]
     private var singletonTypes: [Any.Type] = []
     private var slots: [ObjectIdentifier: Slot] = [:]
-    private var waitingOn: [ObjectIdentifier: ObjectIdentifier] = [:]
+    private var waits: [ObjectIdentifier: Wait] = [:]
     private var activeFactories: [ObjectIdentifier: [ObjectIdentifier]] = [:]
     private var mainJobs: [() -> Void] = []
-
-    /// Receives diagnostics: registrations, every resolve with its call site, builds and failures.
-    /// The message is built lazily, so a logger that checks a runtime flag first costs nothing when off:
-    /// `{ message in if debugFlag { os_log("\(message())") } }`.
-    public typealias Logger = @Sendable (_ message: () -> String) -> Void
-
-    /// A ready-made ``Logger`` that prints.
-    public static let printLogger: Logger = { print("[ServiceLocator] \($0())") }
 
     /// - Parameter logger: Receives diagnostics; `nil` (default) disables logging.
     public init(logger: Logger? = nil) {
@@ -68,9 +75,8 @@ public final class ServiceLocator: @unchecked Sendable {
         module.build()
     }
 
-    /// Resolves an instance of `T`.
+    /// Resolves an instance of `T`. `fileID`, `function` and `line` identify the requester in logs.
     /// - Throws: ``ResolutionError`` if `T` is not registered or depends on itself.
-    /// `fileID`, `function` and `line` identify the requester and show up in logs.
     public func resolve<T>(
         _ type: T.Type = T.self,
         fileID: StaticString = #fileID,
@@ -88,14 +94,15 @@ public final class ServiceLocator: @unchecked Sendable {
 
     /// Creates all registered singletons in parallel, so misconfiguration surfaces at launch rather
     /// than on first use. Each singleton waits only for the dependencies its factory resolves.
-    /// Factories run on background threads. Singletons that already exist are kept.
+    /// Factories run on background threads, except `onMainActor` ones, which need the main thread
+    /// to be free or waiting on this locator. Singletons that already exist are kept.
     /// Traps if a factory cannot resolve a dependency.
     public func build() async {
         let types = condition.withLock { singletonTypes }
         await withCheckedContinuation { continuation in
-            let group = DispatchGroup()
-            for type in types {
-                DispatchQueue.global().async(group: group) { [self] in
+            DispatchQueue.global().async { [self] in
+                DispatchQueue.concurrentPerform(iterations: types.count) { index in
+                    let type = types[index]
                     log("build \(type)")
                     do {
                         _ = try instance(of: type)
@@ -103,8 +110,8 @@ public final class ServiceLocator: @unchecked Sendable {
                         fatalError("Failed to build \(type): \(error)")
                     }
                 }
+                continuation.resume()
             }
-            group.notify(queue: .global()) { continuation.resume() }
         }
     }
 
@@ -116,6 +123,15 @@ public final class ServiceLocator: @unchecked Sendable {
             slots.removeAll()
         }
         log("reset")
+    }
+
+    // For non-throwing call sites, where a missing registration is a programmer error.
+    func resolveOrTrap<T>(_ type: T.Type, fileID: StaticString, function: StaticString, line: UInt) -> T {
+        do {
+            return try resolve(type, fileID: fileID, function: function, line: line)
+        } catch {
+            fatalError("Failed to resolve \(type) for \(fileID)#\(function): \(error)", file: fileID, line: line)
+        }
     }
 
     private func register<T>(_ type: T.Type, _ registration: Registration) {
@@ -130,8 +146,13 @@ public final class ServiceLocator: @unchecked Sendable {
 
     private func instance(of type: Any.Type) throws -> Any {
         let key = ObjectIdentifier(type)
-        let thread = ObjectIdentifier(Thread.current)
         condition.lock()
+        if case .ready(let value)? = slots[key] {
+            condition.unlock()
+            return value
+        }
+
+        let thread = ObjectIdentifier(Thread.current)
         while true {
             switch slots[key] {
             case .ready(let value):
@@ -139,20 +160,19 @@ public final class ServiceLocator: @unchecked Sendable {
                 return value
 
             case .creating:
-                if wouldDeadlock(waitingFor: key, on: thread) {
-                    condition.unlock()
-                    throw ResolutionError.circularDependency(type: "\(type)")
-                }
-                if Thread.isMainThread, !mainJobs.isEmpty {
+                if thread == Self.mainThread, !mainJobs.isEmpty {
                     // What we wait for may need the main thread: serve its queued work instead of blocking it.
                     let job = mainJobs.removeFirst()
                     condition.unlock()
                     job()
                     condition.lock()
+                } else if wouldDeadlock(.singleton(key), on: thread) {
+                    condition.unlock()
+                    throw ResolutionError.circularDependency(type: "\(type)")
                 } else {
-                    waitingOn[thread] = key
+                    waits[thread] = .singleton(key)
                     condition.wait()
-                    waitingOn[thread] = nil
+                    waits[thread] = nil
                 }
 
             case nil:
@@ -187,37 +207,42 @@ public final class ServiceLocator: @unchecked Sendable {
     }
 
     private func create(_ registration: Registration, key: ObjectIdentifier, thread: ObjectIdentifier) -> Any {
-        guard registration.onMainActor, !Thread.isMainThread else { return registration.make() }
+        guard registration.onMainActor, thread != Self.mainThread else { return registration.make() }
 
-        // Not DispatchQueue.main.sync: if main is busy waiting on us, it runs this job itself.
-        final class Result: @unchecked Sendable { var value: Any? }
+        // Not DispatchQueue.main.sync: if main is parked waiting on us, it runs this job itself.
+        final class Result { var value: Any? }
         let result = Result()
         let job = { [self] in
-            let main = ObjectIdentifier(Thread.current)
             condition.withLock {
                 if registration.isSingleton {
-                    slots[key] = .creating(owner: main)
+                    slots[key] = .creating(owner: Self.mainThread)
                 } else {
-                    activeFactories[main, default: []].append(key)
+                    activeFactories[Self.mainThread, default: []].append(key)
                 }
             }
             let value = registration.make()
+            // Finish on the waiter's behalf before it wakes, so no one sees a stale wait-for edge.
             condition.withLock {
-                if !registration.isSingleton { popFactory(key, on: main) }
+                if registration.isSingleton {
+                    slots[key] = .ready(value)
+                } else {
+                    popFactory(key, on: Self.mainThread)
+                }
+                waits[thread] = nil
                 result.value = value
                 condition.broadcast()
             }
         }
 
-        condition.lock()
-        mainJobs.append(job)
-        waitingOn[thread] = key
-        condition.unlock()
+        condition.withLock {
+            mainJobs.append(job)
+            waits[thread] = .mainThread
+            condition.broadcast()
+        }
         DispatchQueue.main.async { [self] in runMainJobs() }
 
         condition.lock()
         while result.value == nil { condition.wait() }
-        waitingOn[thread] = nil
         condition.unlock()
         return result.value!
     }
@@ -232,16 +257,26 @@ public final class ServiceLocator: @unchecked Sendable {
         if activeFactories[thread]?.isEmpty == true { activeFactories[thread] = nil }
     }
 
-    // Follows "thread waits for singleton owned by thread" edges; reaching `thread` means a cycle.
+    // Walks the wait-for graph from `wait`; reaching `thread` means waiting would never end.
     // Callers must hold `condition`.
-    private func wouldDeadlock(waitingFor key: ObjectIdentifier, on thread: ObjectIdentifier) -> Bool {
-        var key = key
-        while case .creating(let owner)? = slots[key] {
+    private func wouldDeadlock(_ wait: Wait, on thread: ObjectIdentifier) -> Bool {
+        var wait = wait
+        var visited: Set<ObjectIdentifier> = []
+        while true {
+            let owner: ObjectIdentifier
+            switch wait {
+            case .singleton(let key):
+                guard case .creating(let creator)? = slots[key] else { return false }
+                owner = creator
+            case .mainThread:
+                // Queued main jobs get run by main, whether it is idle or parked in this locator.
+                guard mainJobs.isEmpty else { return false }
+                owner = Self.mainThread
+            }
             if owner == thread { return true }
-            guard let next = waitingOn[owner] else { return false }
-            key = next
+            guard visited.insert(owner).inserted, let next = waits[owner] else { return false }
+            wait = next
         }
-        return false
     }
 
     private func log(_ message: @autoclosure () -> String) {
