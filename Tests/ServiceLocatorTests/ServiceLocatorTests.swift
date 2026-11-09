@@ -244,7 +244,7 @@ struct ServiceLocatorTests {
 
         let first = Task.detached { _ = try locator.resolve(Greeter.self) }
         let second = Task.detached {
-            try await Task.sleep(for: .milliseconds(50))
+            try await Task.sleep(nanoseconds: 50_000_000)
             _ = try locator.resolve(Greeter.self)
         }
         let resolved = try blockMain(for: 0.2) { try locator.resolve(Greeter.self) is EnglishGreeter }
@@ -255,14 +255,14 @@ struct ServiceLocatorTests {
     }
 
     @Test func waitingForSlowSingletonTimesOut() async throws {
-        let locator = ServiceLocator(waitTimeout: .milliseconds(100))
+        let locator = ServiceLocator(waitTimeout: 0.1)
         locator.single(Greeter.self) {
             Thread.sleep(forTimeInterval: 0.5)
             return EnglishGreeter()
         }
 
         let creator = Task.detached { _ = try locator.resolve(Greeter.self) }
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(throws: ResolutionError.timedOut(type: "Greeter")) {
             try locator.resolve(Greeter.self)
@@ -278,14 +278,14 @@ struct ServiceLocatorTests {
         }
 
         let creator = Task.detached { _ = try locator.resolve(Greeter.self) }
-        try await Task.sleep(for: .milliseconds(50))
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(try locator.resolve(Greeter.self) is EnglishGreeter)
         try await creator.value
     }
 
     @Test @MainActor func waitingForBlockedMainThreadTimesOutAndCanRetry() async throws {
-        let locator = ServiceLocator(waitTimeout: .milliseconds(100))
+        let locator = ServiceLocator(waitTimeout: 0.1)
         let created = Locked(0)
         locator.single(Greeter.self, onMainActor: true) {
             created.withValue { $0 += 1 }

@@ -66,9 +66,9 @@ public final class ServiceLocator: @unchecked Sendable {
     ///   - waitTimeout: How long a resolve waits for a singleton another thread is creating, or for
     ///     the main thread to run an `onMainActor` factory, before throwing ``ResolutionError/timedOut(type:)``.
     ///     `nil` waits forever.
-    public init(logger: Logger? = nil, waitTimeout: Duration? = .seconds(10)) {
+    public init(logger: Logger? = nil, waitTimeout: TimeInterval? = 10) {
         self.logger = logger
-        self.waitTimeout = waitTimeout.map { Double($0.components.seconds) + Double($0.components.attoseconds) * 1e-18 }
+        self.waitTimeout = waitTimeout
     }
 
     /// Registers a factory that creates a new instance on every resolve.
@@ -359,7 +359,7 @@ public func startServiceLocator(_ module: (() -> ServiceLocatorModule)? = nil) -
 /// Same, configured; see ``ServiceLocator/init(logger:waitTimeout:)``.
 public func startServiceLocator(
     logger: ServiceLocator.Logger?,
-    waitTimeout: Duration? = .seconds(10),
+    waitTimeout: TimeInterval? = 10,
     _ module: (() -> ServiceLocatorModule)? = nil
 ) -> ServiceLocator {
     let locator = ServiceLocator(logger: logger, waitTimeout: waitTimeout)
