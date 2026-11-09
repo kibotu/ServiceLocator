@@ -257,9 +257,11 @@ struct ServiceLocatorTests {
     @Test func waitingForSlowSingletonTimesOut() async throws {
         let locator = ServiceLocator(waitTimeout: 0.1)
         let factoryStarted = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
         locator.single(Greeter.self) {
             factoryStarted.signal()
-            Thread.sleep(forTimeInterval: 0.5)
+            // Held until the resolve below has timed out, so a starved CI runner can't finish it early.
+            release.wait()
             return EnglishGreeter()
         }
 
@@ -270,6 +272,7 @@ struct ServiceLocatorTests {
         #expect(throws: ResolutionError.timedOut(type: "Greeter")) {
             try locator.resolve(Greeter.self)
         }
+        release.signal()
         try await creator.value
     }
 
@@ -298,7 +301,9 @@ struct ServiceLocatorTests {
             return EnglishGreeter()
         }
 
+        let timedOut = DispatchSemaphore(value: 0)
         let background = Task.detached { () -> ResolutionError? in
+            defer { timedOut.signal() }
             do {
                 _ = try locator.resolve(Greeter.self)
                 return nil
@@ -306,7 +311,8 @@ struct ServiceLocatorTests {
                 return error as? ResolutionError
             }
         }
-        _ = blockMain(for: 0.3) { true }
+        // Keep main busy until the background resolve has given up, however late the runner schedules it.
+        awaitSignal(timedOut)
 
         #expect(await background.value == .timedOut(type: "Greeter"))
         #expect(try locator.resolve(Greeter.self) is EnglishGreeter)
