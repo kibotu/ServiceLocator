@@ -10,10 +10,7 @@ jobs:
         os: [macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Select latest Xcode
-        uses: maxim-lobanov/setup-xcode@v1
+      - uses: swift-actions/setup-swift@v2
         with:
           xcode-version: 'latest'
 
@@ -26,8 +23,6 @@ jobs:
           xcode-select -p
           echo "== Swift =="
           swift --version
-          echo "== iOS simulator runtimes =="
-          xcrun simctl list runtimes | grep -E '^iOS'
 
       - name: Build
         run: swift build
