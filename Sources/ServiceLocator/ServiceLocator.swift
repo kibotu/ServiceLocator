@@ -96,19 +96,29 @@ public final class ServiceLocator: @unchecked Sendable {
         module.build()
     }
 
-    /// Resolves an instance of `T`. `fileID`, `function` and `line` identify the requester in logs.
+    /// Resolves an instance of `T`. `file`, `fileID`, `function` and `line` identify the requester in logs.
     /// - Throws: ``ResolutionError`` if `T` is not registered, depends on itself, or waiting for it timed out.
     public func resolve<T>(
         _ type: T.Type = T.self,
+        file: StaticString = #filePath,
         fileID: StaticString = #fileID,
         function: StaticString = #function,
         line: UInt = #line
     ) throws -> T {
-        log("resolve \(type) by \(fileID)#\(function):\(line)")
+        try resolve(type, site: .literal(file: file, fileID: fileID, function: function, line: line))
+    }
+
+    /// Source-compatible form of ``resolve(_:file:fileID:function:line:)``; `T` is inferred from the result.
+    public func resolve<T>(_ file: String, _ fileId: String, _ function: String, _ line: Int) throws -> T {
+        try resolve(T.self, site: .dynamic(file: file, fileID: fileId, function: function, line: UInt(clamping: line)))
+    }
+
+    func resolve<T>(_ type: T.Type, site: Site) throws -> T {
+        log("resolve \(type) by \(site)")
         do {
             return try instance(of: type) as! T
         } catch {
-            log("failed to resolve \(type) by \(fileID)#\(function):\(line): \(error)")
+            log("failed to resolve \(type) by \(site): \(error)")
             throw error
         }
     }
@@ -147,11 +157,11 @@ public final class ServiceLocator: @unchecked Sendable {
     }
 
     // For non-throwing call sites, where a missing registration is a programmer error.
-    func resolveOrTrap<T>(_ type: T.Type, fileID: StaticString, function: StaticString, line: UInt) -> T {
+    func resolveOrTrap<T>(_ type: T.Type, site: Site) -> T {
         do {
-            return try resolve(type, fileID: fileID, function: function, line: line)
+            return try resolve(type, site: site)
         } catch {
-            fatalError("Failed to resolve \(type) for \(fileID)#\(function): \(error)", file: fileID, line: line)
+            site.trap("Failed to resolve \(type) for \(site): \(error)")
         }
     }
 

@@ -30,10 +30,11 @@ open class ServiceLocatorModule {
     /// registration is a programmer error; use `ServiceLocator.resolve` to handle the error instead.
     public final func resolve<T>(
         _ type: T.Type = T.self,
+        file: StaticString = #filePath,
         fileID: StaticString = #fileID,
         function: StaticString = #function,
         line: UInt = #line
     ) -> T {
-        locator.resolveOrTrap(type, fileID: fileID, function: function, line: line)
+        locator.resolveOrTrap(type, site: .literal(file: file, fileID: fileID, function: function, line: line))
     }
 }
