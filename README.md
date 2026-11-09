@@ -61,7 +61,7 @@ let locator = startServiceLocator {
 await locator.build() // optional: creates singletons now, so misconfiguration fails at launch
 ```
 
-Singletons are created on first resolve, or by `build()`, in any order. `build()` initializes them **in parallel** on background threads: a singleton whose factory calls `resolve()` waits only for the singletons it needs, and each is created exactly once. Factories therefore must not assume the main thread. Circular dependencies throw instead of deadlocking. Registering a type twice traps.
+Singletons are created on first resolve, or by `build()`, in any order. `build()` initializes them **in parallel** on background threads: a singleton whose factory calls `resolve()` waits only for the singletons it needs, and each is created exactly once. Factories therefore must not assume the main thread, unless registered with `onMainActor: true`. Circular dependencies throw instead of deadlocking. Registering a type twice traps.
 
 #### 3. Retrieve dependencies
 
@@ -84,6 +84,16 @@ let configProvider: ConfigProvider = try locator.resolve()
 ```
 
 Inside a module's factory closures, `resolve()` doesn't throw; it traps if the dependency is missing.
+
+Services that need the main thread (UIKit, main-actor state) opt in per registration:
+
+```swift
+single(Router.self, onMainActor: true) {
+    MainActor.assumeIsolated { Router() }
+}
+```
+
+The factory then runs on the main thread no matter who resolves or builds (inline if already on main, so it can't deadlock itself), while everything else still initializes in parallel. `build()` serves main-thread factories while the main thread is free; code that blocks the main thread on a singleton still works because the waiting main thread runs the queued main-thread factories itself.
 
 Registrations also work without modules: `locator.single(Foo.self) { Foo() }`, `locator.factory(Bar.self) { Bar() }`.
 

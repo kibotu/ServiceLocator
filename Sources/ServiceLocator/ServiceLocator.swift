@@ -8,9 +8,11 @@ import Foundation
 /// Factories run outside any lock, so independent singletons initialize in parallel in ``build()``.
 /// A factory that resolves a singleton another thread is still creating waits for just that one.
 public final class ServiceLocator: @unchecked Sendable {
-    private enum Registration {
-        case factory(() -> Any)
-        case singleton(() -> Any)
+    // Factories are intentionally not Sendable; the locator guarantees where and when they run.
+    private struct Registration: @unchecked Sendable {
+        let make: () -> Any
+        let isSingleton: Bool
+        let onMainActor: Bool
     }
 
     private enum Slot {
@@ -26,6 +28,7 @@ public final class ServiceLocator: @unchecked Sendable {
     private var slots: [ObjectIdentifier: Slot] = [:]
     private var waitingOn: [ObjectIdentifier: ObjectIdentifier] = [:]
     private var activeFactories: [ObjectIdentifier: [ObjectIdentifier]] = [:]
+    private var mainJobs: [() -> Void] = []
 
     /// Receives diagnostics: registrations, every resolve with its call site, builds and failures.
     /// The message is built lazily, so a logger that checks a runtime flag first costs nothing when off:
@@ -42,14 +45,20 @@ public final class ServiceLocator: @unchecked Sendable {
 
     /// Registers a factory that creates a new instance on every resolve.
     /// Registering a type twice is a programmer error and traps.
-    public func factory<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        register(type, .factory { factory() })
+    ///
+    /// - Parameter onMainActor: Runs the factory on the main thread, even when resolved from another
+    ///   one (inline if already on main). In Swift 6 call main-actor initializers via `MainActor.assumeIsolated { }`.
+    public func factory<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        register(type, Registration(make: { factory() }, isSingleton: false, onMainActor: onMainActor))
     }
 
     /// Registers a singleton, created on first resolve or by ``build()``, whichever comes first.
     /// Registering a type twice is a programmer error and traps.
-    public func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        register(type, .singleton { factory() }, isSingleton: true)
+    ///
+    /// - Parameter onMainActor: Runs the factory on the main thread, even when ``build()`` or a resolve
+    ///   comes from another one (inline if already on main). See ``factory(_:onMainActor:_:)``.
+    public func single<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        register(type, Registration(make: { factory() }, isSingleton: true, onMainActor: onMainActor))
     }
 
     /// Registers everything the module declares in ``ServiceLocatorModule/build()``.
@@ -109,12 +118,12 @@ public final class ServiceLocator: @unchecked Sendable {
         log("reset")
     }
 
-    private func register<T>(_ type: T.Type, _ registration: Registration, isSingleton: Bool = false) {
+    private func register<T>(_ type: T.Type, _ registration: Registration) {
         condition.withLock {
             let key = ObjectIdentifier(type)
             precondition(registrations[key] == nil, "\(type) is already registered")
             registrations[key] = registration
-            if isSingleton { singletonTypes.append(type) }
+            if registration.isSingleton { singletonTypes.append(type) }
         }
         log("register \(type)")
     }
@@ -134,46 +143,93 @@ public final class ServiceLocator: @unchecked Sendable {
                     condition.unlock()
                     throw ResolutionError.circularDependency(type: "\(type)")
                 }
-                waitingOn[thread] = key
-                condition.wait()
-                waitingOn[thread] = nil
+                if Thread.isMainThread, !mainJobs.isEmpty {
+                    // What we wait for may need the main thread: serve its queued work instead of blocking it.
+                    let job = mainJobs.removeFirst()
+                    condition.unlock()
+                    job()
+                    condition.lock()
+                } else {
+                    waitingOn[thread] = key
+                    condition.wait()
+                    waitingOn[thread] = nil
+                }
 
             case nil:
                 guard let registration = registrations[key] else {
                     condition.unlock()
                     throw ResolutionError.notRegistered(type: "\(type)")
                 }
-                switch registration {
-                case .factory(let make):
+                if registration.isSingleton {
+                    slots[key] = .creating(owner: thread)
+                } else {
                     if activeFactories[thread, default: []].contains(key) {
                         condition.unlock()
                         throw ResolutionError.circularDependency(type: "\(type)")
                     }
                     activeFactories[thread, default: []].append(key)
-                    condition.unlock()
+                }
+                condition.unlock()
 
-                    let value = make()
+                let value = create(registration, key: key, thread: thread)
 
-                    condition.withLock {
-                        activeFactories[thread]?.removeLast()
-                        if activeFactories[thread]?.isEmpty == true { activeFactories[thread] = nil }
-                    }
-                    return value
-
-                case .singleton(let make):
-                    slots[key] = .creating(owner: thread)
-                    condition.unlock()
-
-                    let value = make()
-
-                    condition.withLock {
+                condition.withLock {
+                    if registration.isSingleton {
                         slots[key] = .ready(value)
                         condition.broadcast()
+                    } else {
+                        popFactory(key, on: thread)
                     }
-                    return value
                 }
+                return value
             }
         }
+    }
+
+    private func create(_ registration: Registration, key: ObjectIdentifier, thread: ObjectIdentifier) -> Any {
+        guard registration.onMainActor, !Thread.isMainThread else { return registration.make() }
+
+        // Not DispatchQueue.main.sync: if main is busy waiting on us, it runs this job itself.
+        final class Result: @unchecked Sendable { var value: Any? }
+        let result = Result()
+        let job = { [self] in
+            let main = ObjectIdentifier(Thread.current)
+            condition.withLock {
+                if registration.isSingleton {
+                    slots[key] = .creating(owner: main)
+                } else {
+                    activeFactories[main, default: []].append(key)
+                }
+            }
+            let value = registration.make()
+            condition.withLock {
+                if !registration.isSingleton { popFactory(key, on: main) }
+                result.value = value
+                condition.broadcast()
+            }
+        }
+
+        condition.lock()
+        mainJobs.append(job)
+        waitingOn[thread] = key
+        condition.unlock()
+        DispatchQueue.main.async { [self] in runMainJobs() }
+
+        condition.lock()
+        while result.value == nil { condition.wait() }
+        waitingOn[thread] = nil
+        condition.unlock()
+        return result.value!
+    }
+
+    private func runMainJobs() {
+        while let job = condition.withLock({ mainJobs.isEmpty ? nil : mainJobs.removeFirst() }) { job() }
+    }
+
+    // Callers must hold `condition`.
+    private func popFactory(_ key: ObjectIdentifier, on thread: ObjectIdentifier) {
+        activeFactories[thread]?.removeLast()
+        if activeFactories[thread]?.isEmpty == true { activeFactories[thread] = nil }
     }
 
     // Follows "thread waits for singleton owned by thread" edges; reaching `thread` means a cycle.

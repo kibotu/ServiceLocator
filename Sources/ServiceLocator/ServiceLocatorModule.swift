@@ -12,13 +12,13 @@ open class ServiceLocatorModule {
     open func build() {}
 
     /// Registers a factory that creates a new instance on every resolve.
-    public final func factory<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        locator.factory(type, factory)
+    public final func factory<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        locator.factory(type, onMainActor: onMainActor, factory)
     }
 
     /// Registers a singleton.
-    public final func single<T>(_ type: T.Type = T.self, _ factory: @escaping () -> T) {
-        locator.single(type, factory)
+    public final func single<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        locator.single(type, onMainActor: onMainActor, factory)
     }
 
     /// Registers a nested module.

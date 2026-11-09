@@ -16,6 +16,12 @@ private final class Locked<Value>: @unchecked Sendable {
     func withValue<R>(_ body: (inout Value) -> R) -> R { lock.withLock { body(&value) } }
 }
 
+// Blocks the main thread on a singleton that a worker is still creating.
+@MainActor private func blockMainResolvingConsumer(_ locator: ServiceLocator) throws -> Bool {
+    Thread.sleep(forTimeInterval: 0.05)
+    return try locator.resolve(Consumer.self).greeter is EnglishGreeter
+}
+
 struct ServiceLocatorTests {
     @Test func factoryCreatesNewInstanceEachTime() throws {
         let locator = ServiceLocator()
@@ -161,6 +167,60 @@ struct ServiceLocatorTests {
         }
         _ = try? locator.resolve(Consumer.self)
         #expect(logged.withValue { $0 })
+    }
+
+    @Test func onMainActorSingletonBuildsOnMainWhileOthersStayOffMain() async {
+        let onMain = Locked<[String: Bool]>([:])
+        let locator = ServiceLocator()
+        locator.single(EnglishGreeter.self, onMainActor: true) {
+            onMain.withValue { $0["main"] = Thread.isMainThread }
+            return EnglishGreeter()
+        }
+        locator.single(Consumer.self) {
+            onMain.withValue { $0["background"] = Thread.isMainThread }
+            return Consumer(greeter: EnglishGreeter())
+        }
+
+        await locator.build()
+
+        #expect(onMain.withValue { $0 } == ["main": true, "background": false])
+    }
+
+    @Test @MainActor func onMainActorRunsInlineWhenAlreadyOnMain() throws {
+        let locator = ServiceLocator()
+        locator.single(EnglishGreeter.self, onMainActor: true) { EnglishGreeter() }
+        locator.factory(Consumer.self, onMainActor: true) { Consumer(greeter: EnglishGreeter()) }
+
+        _ = try locator.resolve(EnglishGreeter.self)
+        _ = try locator.resolve(Consumer.self)
+    }
+
+    @Test func onMainActorFactoryResolvedFromBackgroundRunsOnMain() async throws {
+        let locator = ServiceLocator()
+        let ranOnMain = Locked(false)
+        locator.factory(EnglishGreeter.self, onMainActor: true) {
+            ranOnMain.withValue { $0 = Thread.isMainThread }
+            return EnglishGreeter()
+        }
+
+        try await Task.detached { _ = try locator.resolve(EnglishGreeter.self) }.value
+
+        #expect(ranOnMain.withValue { $0 })
+    }
+
+    @Test @MainActor func mainThreadWaitingOnBackgroundSingletonDoesNotBlockItsMainActorDependency() async throws {
+        let locator = ServiceLocator()
+        locator.single(EnglishGreeter.self, onMainActor: true) { EnglishGreeter() }
+        locator.single(Consumer.self) {
+            Thread.sleep(forTimeInterval: 0.2)
+            return Consumer(greeter: try! locator.resolve(EnglishGreeter.self))
+        }
+
+        let build = Task.detached { await locator.build() }
+        let resolvedGreeter = try blockMainResolvingConsumer(locator)
+        await build.value
+
+        #expect(resolvedGreeter)
     }
 
     @Test func resetClearsRegistrationsAndInstances() throws {
