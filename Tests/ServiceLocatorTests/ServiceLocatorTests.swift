@@ -256,13 +256,16 @@ struct ServiceLocatorTests {
 
     @Test func waitingForSlowSingletonTimesOut() async throws {
         let locator = ServiceLocator(waitTimeout: 0.1)
+        let factoryStarted = DispatchSemaphore(value: 0)
         locator.single(Greeter.self) {
+            factoryStarted.signal()
             Thread.sleep(forTimeInterval: 0.5)
             return EnglishGreeter()
         }
 
         let creator = Task.detached { _ = try locator.resolve(Greeter.self) }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Wait until the factory is actually running, so the resolve below must wait for it.
+        await Task.detached { awaitSignal(factoryStarted) }.value
 
         #expect(throws: ResolutionError.timedOut(type: "Greeter")) {
             try locator.resolve(Greeter.self)
@@ -272,13 +275,16 @@ struct ServiceLocatorTests {
 
     @Test func noTimeoutWaitsForSlowSingleton() async throws {
         let locator = ServiceLocator(waitTimeout: nil)
+        let factoryStarted = DispatchSemaphore(value: 0)
         locator.single(Greeter.self) {
+            factoryStarted.signal()
             Thread.sleep(forTimeInterval: 0.3)
             return EnglishGreeter()
         }
 
         let creator = Task.detached { _ = try locator.resolve(Greeter.self) }
-        try await Task.sleep(nanoseconds: 50_000_000)
+        // Wait until the factory is actually running, so the resolve below must wait for it.
+        await Task.detached { awaitSignal(factoryStarted) }.value
 
         #expect(try locator.resolve(Greeter.self) is EnglishGreeter)
         try await creator.value
@@ -365,4 +371,9 @@ struct ServiceLocatorTests {
 
         #expect(created.withValue { $0 } == 2)
     }
+}
+
+/// Blocks the calling thread until `semaphore` is signalled; a plain function so async tests can call it off-actor.
+private func awaitSignal(_ semaphore: DispatchSemaphore) {
+    semaphore.wait()
 }
