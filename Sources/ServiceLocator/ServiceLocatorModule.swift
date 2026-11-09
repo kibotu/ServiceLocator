@@ -1,11 +1,40 @@
-/// A module for organizing and registering dependencies
+/// Groups related registrations. Subclass it and register in ``build()``.
+///
+/// Registered closures typically capture the module to call `resolve()`; that is safe as long as
+/// the `ServiceLocator` that built the module stays alive.
 open class ServiceLocatorModule {
     public init() {}
 
+    // Set by `ServiceLocator.module(_:)` before `build()` runs.
     weak var locator: ServiceLocator!
 
-    /// Override this method to register dependencies for this module
-    open func build() {
-        // Method designed to be overridden where one can put registration logic during module building phase
+    /// Override to register dependencies.
+    open func build() {}
+
+    /// Registers a factory that creates a new instance on every resolve.
+    public final func factory<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        locator.factory(type, onMainActor: onMainActor, factory)
+    }
+
+    /// Registers a singleton.
+    public final func single<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        locator.single(type, onMainActor: onMainActor, factory)
+    }
+
+    /// Registers a nested module.
+    public final func module(_ module: () -> ServiceLocatorModule) {
+        locator.module(module)
+    }
+
+    /// Resolves a dependency inside a factory. Traps if it cannot be resolved, because a missing
+    /// registration is a programmer error; use `ServiceLocator.resolve` to handle the error instead.
+    public final func resolve<T>(
+        _ type: T.Type = T.self,
+        file: StaticString = #filePath,
+        fileID: StaticString = #fileID,
+        function: StaticString = #function,
+        line: UInt = #line
+    ) -> T {
+        locator.resolveOrTrap(type, site: .literal(file: file, fileID: fileID, function: function, line: line))
     }
 }
