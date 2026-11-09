@@ -8,13 +8,27 @@ jobs:
     strategy:
       matrix:
         os: [macos-latest]
-        swift: ["5.10"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: swift-actions/setup-swift@v2
+      - uses: actions/checkout@v7
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
         with:
-          swift-version: ${{ matrix.swift }}
-      - uses: actions/checkout@v4
+          xcode-version: 'latest'
+
+      - name: Log toolchain versions
+        run: |
+          echo "== macOS =="
+          sw_vers
+          echo "== Xcode =="
+          xcodebuild -version
+          xcode-select -p
+          echo "== Swift =="
+          swift --version
+          echo "== iOS simulator runtimes =="
+          xcrun simctl list runtimes | grep -E '^iOS'
+
       - name: Build
         run: swift build
       - name: Run tests
