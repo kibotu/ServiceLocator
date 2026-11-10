@@ -71,6 +71,23 @@ final class NetworkModule: ServiceLocatorModule {
 
 Registrations are keyed by the exact type you pass, so register protocols as `single(Repository.self) { … }` and resolve them as `Repository`. Registering a type twice traps.
 
+### Identifiers
+
+To register several instances of the same type, give each a string identifier. An identified registration is separate from the unidentified one:
+
+```swift
+final class NetworkModule: ServiceLocatorModule {
+    override func build() {
+        factory(HttpClient.self) { HttpClient(requiresLogin: true) }
+        factory(identifier: "unauthenticated") { HttpClient(requiresLogin: false) }
+    }
+}
+
+let client: HttpClient = try locator.resolve(identifier: "unauthenticated")
+```
+
+`single(_:identifier:)` works the same way, and inside a module `resolve(identifier:)` doesn't throw. Resolving an unknown identifier throws `.notRegistered`; registering the same type and identifier twice traps.
+
 Compose modules into an app-wide one:
 
 ```swift
@@ -202,6 +219,7 @@ Wrappers that forward their call site as plain `String`s and an `Int` line (the 
 - `waitTimeout` takes a `TimeInterval` in seconds (not a `Duration`), so the package supports iOS 15.
 - `resolve` and `Dependency.init` gained `StaticString` call-site overloads; the positional `String` forms remain.
 - `build()` no longer takes a `file` argument.
+- Registering and resolving by `identifier:` is supported (`factory`, `single`, `resolve`).
 
 ## Acknowledgements
 

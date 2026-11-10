@@ -51,6 +51,61 @@ struct ServiceLocatorTests {
         }
     }
 
+    @Test func identifiersSeparateRegistrationsOfTheSameType() throws {
+        let locator = ServiceLocator()
+        locator.factory(EnglishGreeter.self) { EnglishGreeter() }
+        locator.single(EnglishGreeter.self, identifier: "shared") { EnglishGreeter() }
+        locator.factory(EnglishGreeter.self, identifier: "fresh") { EnglishGreeter() }
+
+        let shared = try locator.resolve(EnglishGreeter.self, identifier: "shared")
+        #expect(shared === (try locator.resolve(EnglishGreeter.self, identifier: "shared")))
+        #expect(shared !== (try locator.resolve(EnglishGreeter.self)))
+        #expect(try locator.resolve(EnglishGreeter.self, identifier: "fresh") !== locator.resolve(EnglishGreeter.self, identifier: "fresh"))
+    }
+
+    @Test func unknownIdentifierThrows() {
+        let locator = ServiceLocator()
+        locator.factory(EnglishGreeter.self) { EnglishGreeter() }
+
+        #expect(throws: ResolutionError.notRegistered(type: "EnglishGreeter (identifier: \"missing\")")) {
+            try locator.resolve(EnglishGreeter.self, identifier: "missing")
+        }
+    }
+
+    @Test func duplicateIdentifierIsDistinctFromUnidentifiedRegistration() throws {
+        let locator = ServiceLocator()
+        locator.single(EnglishGreeter.self) { EnglishGreeter() }
+        locator.single(EnglishGreeter.self, identifier: "other") { EnglishGreeter() }
+
+        #expect(try locator.resolve(EnglishGreeter.self) !== locator.resolve(EnglishGreeter.self, identifier: "other"))
+    }
+
+    @Test func buildCreatesIdentifiedSingletons() async throws {
+        let created = Locked(0)
+        let locator = ServiceLocator()
+        locator.single(EnglishGreeter.self, identifier: "a") {
+            created.withValue { $0 += 1 }
+            return EnglishGreeter()
+        }
+        await locator.build()
+
+        #expect(created.withValue { $0 } == 1)
+        _ = try locator.resolve(EnglishGreeter.self, identifier: "a")
+        #expect(created.withValue { $0 } == 1)
+    }
+
+    @Test func moduleRegistersAndResolvesByIdentifier() throws {
+        final class Module: ServiceLocatorModule {
+            override func build() {
+                factory(identifier: "english") { EnglishGreeter() }
+                single(Consumer.self) { Consumer(greeter: self.resolve(EnglishGreeter.self, identifier: "english")) }
+            }
+        }
+        let locator = startServiceLocator { Module() }
+
+        #expect(try locator.resolve(Consumer.self).greeter is EnglishGreeter)
+    }
+
     @Test func buildCreatesSingletonsEagerlyAndOnlyOnce() async throws {
         let created = Locked(0)
         let locator = ServiceLocator()

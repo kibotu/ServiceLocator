@@ -22,6 +22,27 @@ public final class ServiceLocator: @unchecked Sendable {
         let onMainActor: Bool
     }
 
+    // A registration is keyed by its type and, optionally, a string identifier.
+    private struct Key: Hashable, CustomStringConvertible {
+        let type: ObjectIdentifier
+        let name: String
+        let identifier: String?
+
+        init(_ type: Any.Type, _ identifier: String?) {
+            self.type = ObjectIdentifier(type)
+            self.name = "\(type)"
+            self.identifier = identifier
+        }
+
+        static func == (lhs: Key, rhs: Key) -> Bool { lhs.type == rhs.type && lhs.identifier == rhs.identifier }
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(type)
+            hasher.combine(identifier)
+        }
+
+        var description: String { identifier.map { "\(name) (identifier: \"\($0)\")" } ?? name }
+    }
+
     private enum Slot {
         case creating(owner: ObjectIdentifier)
         case ready(Any)
@@ -29,19 +50,19 @@ public final class ServiceLocator: @unchecked Sendable {
 
     // What a parked thread waits for; edges of the wait-for graph used to detect cycles.
     private enum Wait {
-        case singleton(ObjectIdentifier)
+        case singleton(Key)
         case mainThread
     }
 
     // A main-actor factory queued by a background thread. Fields are guarded by `condition`.
     private final class MainJob {
-        let key: ObjectIdentifier
+        let key: Key
         let registration: Registration
         let waiter: ObjectIdentifier
         var value: Any?
         var abandoned = false
 
-        init(key: ObjectIdentifier, registration: Registration, waiter: ObjectIdentifier) {
+        init(key: Key, registration: Registration, waiter: ObjectIdentifier) {
             self.key = key
             self.registration = registration
             self.waiter = waiter
@@ -54,11 +75,11 @@ public final class ServiceLocator: @unchecked Sendable {
     private let condition = NSCondition()
     private let logger: Logger?
     private let waitTimeout: TimeInterval?
-    private var registrations: [ObjectIdentifier: Registration] = [:]
-    private var singletonTypes: [Any.Type] = []
-    private var slots: [ObjectIdentifier: Slot] = [:]
+    private var registrations: [Key: Registration] = [:]
+    private var singletonKeys: [Key] = []
+    private var slots: [Key: Slot] = [:]
     private var waits: [ObjectIdentifier: Wait] = [:]
-    private var activeFactories: [ObjectIdentifier: [ObjectIdentifier]] = [:]
+    private var activeFactories: [ObjectIdentifier: [Key]] = [:]
     private var mainJobs: [MainJob] = []
 
     /// - Parameters:
@@ -77,7 +98,13 @@ public final class ServiceLocator: @unchecked Sendable {
     /// - Parameter onMainActor: Runs the factory on the main thread, even when resolved from another
     ///   one (inline if already on main). In Swift 6 call main-actor initializers via `MainActor.assumeIsolated { }`.
     public func factory<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
-        register(type, Registration(make: { factory() }, isSingleton: false, onMainActor: onMainActor))
+        register(Key(type, nil), Registration(make: { factory() }, isSingleton: false, onMainActor: onMainActor))
+    }
+
+    /// Registers a factory under a string identifier, so several registrations of the same type can coexist.
+    /// Resolve it with ``resolve(_:identifier:file:fileID:function:line:)``.
+    public func factory<T>(_ type: T.Type = T.self, identifier: String, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        register(Key(type, identifier), Registration(make: { factory() }, isSingleton: false, onMainActor: onMainActor))
     }
 
     /// Registers a singleton, created on first resolve or by ``build()``, whichever comes first.
@@ -86,7 +113,12 @@ public final class ServiceLocator: @unchecked Sendable {
     /// - Parameter onMainActor: Runs the factory on the main thread, even when ``build()`` or a resolve
     ///   comes from another one (inline if already on main). See ``factory(_:onMainActor:_:)``.
     public func single<T>(_ type: T.Type = T.self, onMainActor: Bool = false, _ factory: @escaping () -> T) {
-        register(type, Registration(make: { factory() }, isSingleton: true, onMainActor: onMainActor))
+        register(Key(type, nil), Registration(make: { factory() }, isSingleton: true, onMainActor: onMainActor))
+    }
+
+    /// Registers a singleton under a string identifier. See ``factory(_:identifier:onMainActor:_:)``.
+    public func single<T>(_ type: T.Type = T.self, identifier: String, onMainActor: Bool = false, _ factory: @escaping () -> T) {
+        register(Key(type, identifier), Registration(make: { factory() }, isSingleton: true, onMainActor: onMainActor))
     }
 
     /// Registers everything the module declares in ``ServiceLocatorModule/build()``.
@@ -108,17 +140,31 @@ public final class ServiceLocator: @unchecked Sendable {
         try resolve(type, site: .literal(file: file, fileID: fileID, function: function, line: line))
     }
 
+    /// Resolves the instance of `T` registered under `identifier`.
+    /// - Throws: ``ResolutionError`` if nothing is registered under that identifier, it depends on itself, or waiting for it timed out.
+    public func resolve<T>(
+        _ type: T.Type = T.self,
+        identifier: String,
+        file: StaticString = #filePath,
+        fileID: StaticString = #fileID,
+        function: StaticString = #function,
+        line: UInt = #line
+    ) throws -> T {
+        try resolve(type, identifier: identifier, site: .literal(file: file, fileID: fileID, function: function, line: line))
+    }
+
     /// Source-compatible form of ``resolve(_:file:fileID:function:line:)``; `T` is inferred from the result.
     public func resolve<T>(_ file: String, _ fileId: String, _ function: String, _ line: Int) throws -> T {
         try resolve(T.self, site: .dynamic(file: file, fileID: fileId, function: function, line: UInt(clamping: line)))
     }
 
-    func resolve<T>(_ type: T.Type, site: Site) throws -> T {
-        log("resolve \(type) by \(site)")
+    func resolve<T>(_ type: T.Type, identifier: String? = nil, site: Site) throws -> T {
+        let key = Key(type, identifier)
+        log("resolve \(key) by \(site)")
         do {
-            return try instance(of: type) as! T
+            return try instance(of: key) as! T
         } catch {
-            log("failed to resolve \(type) by \(site): \(error)")
+            log("failed to resolve \(key) by \(site): \(error)")
             throw error
         }
     }
@@ -129,16 +175,16 @@ public final class ServiceLocator: @unchecked Sendable {
     /// to be free or waiting on this locator. Singletons that already exist are kept.
     /// Traps if a factory cannot resolve a dependency.
     public func build() async {
-        let types = condition.withLock { singletonTypes }
+        let keys = condition.withLock { singletonKeys }
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async { [self] in
-                DispatchQueue.concurrentPerform(iterations: types.count) { index in
-                    let type = types[index]
-                    log("build \(type)")
+                DispatchQueue.concurrentPerform(iterations: keys.count) { index in
+                    let key = keys[index]
+                    log("build \(key)")
                     do {
-                        _ = try instance(of: type)
+                        _ = try instance(of: key)
                     } catch {
-                        fatalError("Failed to build \(type): \(error)")
+                        fatalError("Failed to build \(key): \(error)")
                     }
                 }
                 continuation.resume()
@@ -150,33 +196,31 @@ public final class ServiceLocator: @unchecked Sendable {
     public func reset() {
         condition.withLock {
             registrations.removeAll()
-            singletonTypes.removeAll()
+            singletonKeys.removeAll()
             slots.removeAll()
         }
         log("reset")
     }
 
     // For non-throwing call sites, where a missing registration is a programmer error.
-    func resolveOrTrap<T>(_ type: T.Type, site: Site) -> T {
+    func resolveOrTrap<T>(_ type: T.Type, identifier: String? = nil, site: Site) -> T {
         do {
-            return try resolve(type, site: site)
+            return try resolve(type, identifier: identifier, site: site)
         } catch {
-            site.trap("Failed to resolve \(type) for \(site): \(error)")
+            site.trap("Failed to resolve \(Key(type, identifier)) for \(site): \(error)")
         }
     }
 
-    private func register<T>(_ type: T.Type, _ registration: Registration) {
+    private func register(_ key: Key, _ registration: Registration) {
         condition.withLock {
-            let key = ObjectIdentifier(type)
-            precondition(registrations[key] == nil, "\(type) is already registered")
+            precondition(registrations[key] == nil, "\(key) is already registered")
             registrations[key] = registration
-            if registration.isSingleton { singletonTypes.append(type) }
+            if registration.isSingleton { singletonKeys.append(key) }
         }
-        log("register \(type)")
+        log("register \(key)")
     }
 
-    private func instance(of type: Any.Type) throws -> Any {
-        let key = ObjectIdentifier(type)
+    private func instance(of key: Key) throws -> Any {
         condition.lock()
         if case .ready(let value)? = slots[key] {
             condition.unlock()
@@ -200,28 +244,28 @@ public final class ServiceLocator: @unchecked Sendable {
                     condition.lock()
                 } else if wouldDeadlock(.singleton(key), on: thread) {
                     condition.unlock()
-                    throw ResolutionError.circularDependency(type: "\(type)")
+                    throw ResolutionError.circularDependency(type: "\(key)")
                 } else {
                     waits[thread] = .singleton(key)
                     let signaled = wait(until: deadline)
                     waits[thread] = nil
                     if !signaled, case .creating? = slots[key] {
                         condition.unlock()
-                        throw ResolutionError.timedOut(type: "\(type)")
+                        throw ResolutionError.timedOut(type: "\(key)")
                     }
                 }
 
             case nil:
                 guard let registration = registrations[key] else {
                     condition.unlock()
-                    throw ResolutionError.notRegistered(type: "\(type)")
+                    throw ResolutionError.notRegistered(type: "\(key)")
                 }
                 if registration.isSingleton {
                     slots[key] = .creating(owner: thread)
                 } else {
                     if activeFactories[thread, default: []].contains(key) {
                         condition.unlock()
-                        throw ResolutionError.circularDependency(type: "\(type)")
+                        throw ResolutionError.circularDependency(type: "\(key)")
                     }
                     activeFactories[thread, default: []].append(key)
                 }
@@ -229,7 +273,7 @@ public final class ServiceLocator: @unchecked Sendable {
 
                 let value: Any
                 do {
-                    value = try create(registration, key: key, type: type, thread: thread)
+                    value = try create(registration, key: key, thread: thread)
                 } catch {
                     condition.withLock {
                         if !registration.isSingleton {
@@ -258,8 +302,7 @@ public final class ServiceLocator: @unchecked Sendable {
 
     private func create(
         _ registration: Registration,
-        key: ObjectIdentifier,
-        type: Any.Type,
+        key: Key,
         thread: ObjectIdentifier
     ) throws -> Any {
         guard registration.onMainActor, thread != Self.mainThread else { return registration.make() }
@@ -281,7 +324,7 @@ public final class ServiceLocator: @unchecked Sendable {
                 job.abandoned = true
                 waits[thread] = nil
                 mainJobs.removeAll { $0 === job }
-                throw ResolutionError.timedOut(type: "\(type)")
+                throw ResolutionError.timedOut(type: "\(key)")
             }
         }
         return job.value!
@@ -328,7 +371,7 @@ public final class ServiceLocator: @unchecked Sendable {
     }
 
     // Callers must hold `condition`.
-    private func popFactory(_ key: ObjectIdentifier, on thread: ObjectIdentifier) {
+    private func popFactory(_ key: Key, on thread: ObjectIdentifier) {
         activeFactories[thread]?.removeLast()
         if activeFactories[thread]?.isEmpty == true { activeFactories[thread] = nil }
     }
